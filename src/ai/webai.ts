@@ -54,6 +54,8 @@ export class WebAIService {
   private configs: Map<string, WebAIConfig> = new Map();
   private browserEngine: BrowserEngine | null = null;
   private initialized = false;
+  private activePage: import('puppeteer').Page | null = null;
+  private activeConfig: WebAIConfig | null = null;
   private chromeUserDataDir: string;
 
   constructor() {
@@ -416,8 +418,101 @@ export class WebAIService {
       initialCount
     );
 
-    // Wait longer for image analysis
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Wait for AI to finish responding (check for loading indicators)
+    await this.waitForResponseComplete(page, responseSelector);
+
+    // Get response
+    const responseText = await page.$$eval(responseSelector, (els) => {
+      const lastEl = els[els.length - 1];
+      return lastEl ? lastEl.textContent || '' : '';
+    });
+
+    // Save page for follow-up questions
+    this.activePage = page;
+    this.activeConfig = config;
+
+    return responseText.trim();
+  }
+
+  /**
+   * Wait for AI response to complete (not still generating)
+   */
+  private async waitForResponseComplete(page: import('puppeteer').Page, responseSelector: string): Promise<void> {
+    // Wait initial time for response to start
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Check if still generating by watching for content changes
+    let lastContent = '';
+    let stableCount = 0;
+    const maxWait = 60; // 60 seconds max
+
+    for (let i = 0; i < maxWait; i++) {
+      const currentContent = await page.$$eval(responseSelector, (els) => {
+        const lastEl = els[els.length - 1];
+        return lastEl ? lastEl.textContent || '' : '';
+      });
+
+      if (currentContent === lastContent && currentContent.length > 0) {
+        stableCount++;
+        if (stableCount >= 3) {
+          // Content stable for 3 seconds, consider complete
+          break;
+        }
+      } else {
+        stableCount = 0;
+        lastContent = currentContent;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  /**
+   * Send a follow-up question in the same conversation
+   */
+  public async followUp(question: string): Promise<string> {
+    if (!this.activePage || !this.activeConfig) {
+      throw new Error('No active conversation. Start with queryWithImage first.');
+    }
+
+    const page = this.activePage;
+    const config = this.activeConfig;
+
+    // Check for verification dialogs
+    await this.handleVerificationDialog(page);
+
+    // Type the follow-up question
+    const inputSelector = config.inputSelector || 'textarea';
+    await page.click(inputSelector);
+    await page.type(inputSelector, question, { delay: 30 });
+
+    // Get current response count
+    const responseSelector = config.responseSelector || '.response';
+    const initialCount = await page.$$eval(responseSelector, els => els.length);
+
+    // Submit
+    await new Promise(resolve => setTimeout(resolve, 500));
+    try {
+      const submitSelector = config.submitSelector || 'button[type="submit"]';
+      await page.waitForSelector(submitSelector, { timeout: 3000 });
+      await page.click(submitSelector);
+    } catch {
+      await page.keyboard.press('Enter');
+    }
+
+    // Wait for new response
+    await page.waitForFunction(
+      (selector: string, count: number) => {
+        const elements = document.querySelectorAll(selector);
+        return elements.length > count;
+      },
+      { timeout: config.responseTimeout || 120000 },
+      responseSelector,
+      initialCount
+    );
+
+    // Wait for response to complete
+    await this.waitForResponseComplete(page, responseSelector);
 
     // Get response
     const responseText = await page.$$eval(responseSelector, (els) => {
@@ -426,6 +521,13 @@ export class WebAIService {
     });
 
     return responseText.trim();
+  }
+
+  /**
+   * Check if there's an active conversation
+   */
+  public hasActiveConversation(): boolean {
+    return this.activePage !== null && this.activeConfig !== null;
   }
 
   /**

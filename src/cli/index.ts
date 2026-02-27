@@ -93,6 +93,177 @@ program
     }
   });
 
+// ============================================================================
+// Smart Task Command - Natural Language Device Testing
+// ============================================================================
+
+program
+  .command('task <description...>')
+  .description('Execute a task on connected device using natural language')
+  .option('-d, --device <id>', 'specific device ID')
+  .option('-v, --verbose', 'show detailed steps')
+  .action(async (description: string[], options: { device?: string; verbose?: boolean }) => {
+    const taskDescription = description.join(' ');
+    const spinner = ora('Initializing task...').start();
+
+    try {
+      const { DeviceTools } = await import('@/tools/device');
+      const { webAIService } = await import('@/ai/webai');
+      const fs = await import('fs/promises');
+      const path = await import('path');
+
+      const deviceTools = new DeviceTools();
+
+      // Step 1: Detect device
+      spinner.text = '🔍 Detecting connected devices...';
+      const devices = await deviceTools.listDevices();
+      
+      if (devices.length === 0) {
+        spinner.fail(chalk.red('No devices connected'));
+        console.log(chalk.yellow('\nConnect a device via USB and try again.'));
+        process.exit(1);
+      }
+
+      let targetDevice = devices[0];
+      if (options.device) {
+        const found = devices.find(d => d.id === options.device);
+        if (!found) {
+          spinner.fail(chalk.red(`Device ${options.device} not found`));
+          process.exit(1);
+        }
+        targetDevice = found;
+      }
+
+      spinner.succeed(chalk.green(`Device: ${targetDevice.model} (${targetDevice.id})`));
+
+      // Step 2: Take screenshot
+      spinner.start('📸 Capturing screen...');
+      const screenshotResult = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
+      
+      if (!screenshotResult.success || !screenshotResult.data?.path) {
+        spinner.fail(chalk.red('Failed to capture screenshot'));
+        process.exit(1);
+      }
+
+      const screenshotPath = screenshotResult.data.path;
+      spinner.succeed(chalk.green('Screenshot captured'));
+
+      // Step 3: Analyze screen with AI
+      spinner.start('🤖 Analyzing screen and planning task...');
+      
+      // Get default Web AI
+      const webAIs = config.listWebAIs();
+      if (webAIs.length === 0) {
+        spinner.fail(chalk.red('No Web AI configured. Run: openman webai add doubao https://www.doubao.com/chat/'));
+        process.exit(1);
+      }
+      
+      const webAI = webAIs[0];
+      webAIService.addConfig(webAI);
+
+      const analysisPrompt = `你是一个智能设备测试助手。
+
+用户任务: ${taskDescription}
+
+请分析这张设备截图，然后：
+1. 描述当前屏幕显示的内容（当前打开的是什么应用）
+2. 根据用户任务，列出需要执行的具体操作步骤
+3. 每个步骤说明需要点击的位置或输入的内容
+
+请用以下格式回复：
+【当前界面】: 简要描述
+【操作步骤】:
+1. 步骤1（动作类型: 点击/输入/滑动, 目标: 具体位置或元素）
+2. 步骤2
+...
+【预期结果】: 完成后应该看到什么`;
+
+      const analysis = await webAIService.queryWithImage(webAI.name, screenshotPath, analysisPrompt);
+      
+      spinner.succeed(chalk.green('Analysis complete'));
+
+      // Display results
+      console.log(chalk.cyan('\n' + '='.repeat(60)));
+      console.log(chalk.cyan('📋 Task Analysis'));
+      console.log(chalk.cyan('='.repeat(60)));
+      console.log(chalk.white(`\n🎯 Task: ${taskDescription}\n`));
+      console.log(chalk.white(analysis));
+      console.log(chalk.cyan('\n' + '='.repeat(60)));
+
+      // Interactive conversation loop
+      const readline = await import('readline');
+      
+      console.log(chalk.gray('\n💬 You can now ask follow-up questions or give instructions.'));
+      console.log(chalk.gray('   Commands: "screenshot" - take new screenshot, "exit" - end task\n'));
+
+      while (true) {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        const userInput = await new Promise<string>((resolve) => {
+          rl.question(chalk.cyan('You > '), (answer) => {
+            rl.close();
+            resolve(answer.trim());
+          });
+        });
+
+        if (!userInput) continue;
+
+        // Check for special commands
+        if (userInput.toLowerCase() === 'exit' || userInput.toLowerCase() === 'quit' || userInput.toLowerCase() === '退出') {
+          console.log(chalk.gray('\nTask completed.'));
+          break;
+        }
+
+        if (userInput.toLowerCase() === 'screenshot' || userInput.toLowerCase() === '截图') {
+          spinner.start('📸 Taking new screenshot...');
+          const newScreenshot = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
+          spinner.succeed(chalk.green('New screenshot captured'));
+          
+          if (newScreenshot.data?.path) {
+            console.log(chalk.gray(`  Saved: ${newScreenshot.data.path}`));
+            
+            // Upload new screenshot and ask AI to analyze
+            spinner.start('🤖 Analyzing new screenshot...');
+            const newAnalysis = await webAIService.queryWithImage(
+              webAI.name, 
+              newScreenshot.data.path, 
+              '请分析这张新的截图，描述当前界面的状态和变化'
+            );
+            spinner.succeed(chalk.green('Analysis complete'));
+            console.log(chalk.green('\n🤖 AI: ') + newAnalysis + '\n');
+          }
+          continue;
+        }
+
+        // Send follow-up question to AI
+        spinner.start('🤖 Thinking...');
+        try {
+          const response = await webAIService.followUp(userInput);
+          spinner.succeed(chalk.green('Response received'));
+          console.log(chalk.green('\n🤖 AI: ') + response + '\n');
+        } catch (error: any) {
+          spinner.fail(chalk.red('Error: ' + error.message));
+        }
+      }
+
+      await webAIService.close();
+
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      if (options.verbose) {
+        console.error(error);
+      }
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// Status Command
+// ============================================================================
+
 program
   .command('status')
   .description('Show OpenMan status and available AI providers')
