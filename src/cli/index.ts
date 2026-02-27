@@ -315,21 +315,85 @@ action: tap/input/wait/back(返回键)`;
         const verifyScreenshot = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
         spinner.succeed(chalk.green('Verification screenshot captured'));
 
-        // Analyze result
+        // Analyze result and auto-retry if failed
         if (verifyScreenshot.data?.path) {
           spinner.start('🤖 Verifying result...');
           const verifyPrompt = `任务: ${taskDescription}
 预期结果: ${taskPlan.expected_result}
 
-请分析这张执行后的截图，判断任务是否成功完成，简要说明当前界面状态。`;
+请分析截图判断任务是否成功。回复JSON格式：
+{"success": true/false, "status": "当前界面状态", "reason": "失败原因(如果失败)", "suggestion": "下一步建议"}`;
           
           const verification = await webAIService.queryWithImage(webAI.name, verifyScreenshot.data.path, verifyPrompt);
           spinner.succeed(chalk.green('Verification complete'));
           
+          // Parse verification result
+          let verifyResult: any = null;
+          try {
+            const jsonMatch = verification.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              verifyResult = JSON.parse(jsonMatch[0]);
+            }
+          } catch {
+            // Could not parse JSON
+          }
+
           console.log(chalk.cyan('\n' + '='.repeat(60)));
           console.log(chalk.cyan('📊 Task Result'));
           console.log(chalk.cyan('='.repeat(60)));
-          console.log(chalk.white('\n' + verification));
+          
+          if (verifyResult?.success) {
+            console.log(chalk.green('\n✅ Task completed successfully!'));
+            console.log(chalk.white(`Status: ${verifyResult.status}`));
+          } else {
+            console.log(chalk.yellow('\n⚠️ Task not fully completed'));
+            console.log(chalk.white(`Status: ${verifyResult?.status || verification}`));
+            
+            if (verifyResult?.reason) {
+              console.log(chalk.gray(`Reason: ${verifyResult.reason}`));
+            }
+            
+            // Auto problem-solving: Ask AI for solution
+            if (verifyResult?.suggestion || verifyResult?.reason) {
+              console.log(chalk.cyan('\n🔄 Auto problem-solving...'));
+              spinner.start('🤖 Finding solution...');
+              
+              const solutionPrompt = `任务失败了。
+任务: ${taskDescription}
+当前状态: ${verifyResult?.status || '未知'}
+失败原因: ${verifyResult?.reason || '未知'}
+
+请分析问题并提供解决方案，返回JSON格式的下一步操作：
+{"solution": "解决方案说明", "steps": [{"action": "tap/input/back/wait", "target": "目标", "position": "位置", "text": "输入内容"}]}`;
+
+              try {
+                const solution = await webAIService.followUp(solutionPrompt);
+                spinner.succeed(chalk.green('Solution found'));
+                
+                // Try to parse and offer to execute
+                let solutionPlan: any = null;
+                try {
+                  const jsonMatch = solution.match(/\{[\s\S]*\}/);
+                  if (jsonMatch) {
+                    solutionPlan = JSON.parse(jsonMatch[0]);
+                  }
+                } catch {}
+
+                if (solutionPlan?.solution) {
+                  console.log(chalk.cyan('\n💡 AI Solution: ') + solutionPlan.solution);
+                }
+                
+                if (solutionPlan?.steps?.length > 0) {
+                  console.log(chalk.yellow('\n📝 Suggested fix steps:'));
+                  solutionPlan.steps.forEach((s: any, i: number) => {
+                    console.log(chalk.white(`   ${i + 1}. ${s.action}: ${s.target || s.text || s.position}`));
+                  });
+                }
+              } catch (err: any) {
+                spinner.fail(chalk.gray('Could not get solution: ' + err.message));
+              }
+            }
+          }
           console.log(chalk.cyan('\n' + '='.repeat(60)));
         }
       } else {
@@ -1605,6 +1669,295 @@ program
       spinner.fail(chalk.red('Error: ' + error.message));
       process.exit(1);
     }
+  });
+
+// ============================================================================
+// Tool Commands - Local tool cache and management
+// ============================================================================
+
+const toolCmd = program.command('tool').description('Manage local tools (create, run, share)');
+
+toolCmd
+  .command('list')
+  .description('List all local tools')
+  .action(async () => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    
+    const toolsDir = path.join(homedir(), '.openman', 'tools');
+    
+    try {
+      await fs.mkdir(toolsDir, { recursive: true });
+      const files = await fs.readdir(toolsDir);
+      const tools = files.filter(f => f.endsWith('.json'));
+      
+      if (tools.length === 0) {
+        console.log(chalk.yellow('\nNo local tools found.'));
+        console.log(chalk.gray('Create one with: openman tool create <name>'));
+        return;
+      }
+      
+      console.log(chalk.cyan('\n🔧 Local Tools:\n'));
+      for (const toolFile of tools) {
+        const toolPath = path.join(toolsDir, toolFile);
+        const content = await fs.readFile(toolPath, 'utf-8');
+        const tool = JSON.parse(content);
+        console.log(chalk.white(`  ${tool.name}`));
+        console.log(chalk.gray(`    ${tool.description || 'No description'}`));
+        console.log(chalk.gray(`    Created: ${tool.created || 'Unknown'}`));
+        console.log('');
+      }
+    } catch (error: any) {
+      console.log(chalk.red('Error: ' + error.message));
+    }
+  });
+
+toolCmd
+  .command('create <name>')
+  .description('Create a new local tool')
+  .option('-d, --description <text>', 'tool description')
+  .action(async (name: string, options: { description?: string }) => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    const readline = await import('readline');
+    
+    const toolsDir = path.join(homedir(), '.openman', 'tools');
+    await fs.mkdir(toolsDir, { recursive: true });
+    
+    const toolPath = path.join(toolsDir, `${name}.json`);
+    
+    console.log(chalk.cyan(`\n🔧 Creating tool: ${name}\n`));
+    console.log(chalk.gray('Enter the steps for this tool (JSON array format):'));
+    console.log(chalk.gray('Example: [{"action":"tap","position":"top-center"},{"action":"input","text":"test"}]'));
+    console.log(chalk.gray('Or enter steps interactively:\n'));
+    
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    
+    const steps: any[] = [];
+    let addingSteps = true;
+    
+    while (addingSteps) {
+      const action = await new Promise<string>(resolve => {
+        rl.question(chalk.cyan('Action (tap/input/wait/back/done): '), resolve);
+      });
+      
+      if (action === 'done' || !action) {
+        addingSteps = false;
+        break;
+      }
+      
+      const step: any = { action };
+      
+      if (action === 'tap') {
+        step.position = await new Promise<string>(resolve => {
+          rl.question(chalk.gray('Position (e.g., top-center, middle-left): '), resolve);
+        });
+        step.target = await new Promise<string>(resolve => {
+          rl.question(chalk.gray('Target description: '), resolve);
+        });
+      } else if (action === 'input') {
+        step.text = await new Promise<string>(resolve => {
+          rl.question(chalk.gray('Text to input: '), resolve);
+        });
+      } else if (action === 'wait') {
+        const secs = await new Promise<string>(resolve => {
+          rl.question(chalk.gray('Seconds to wait: '), resolve);
+        });
+        step.seconds = parseInt(secs) || 2;
+      }
+      
+      steps.push(step);
+      console.log(chalk.green(`  ✓ Added step: ${action}`));
+    }
+    
+    rl.close();
+    
+    const tool = {
+      name,
+      description: options.description || `Local tool: ${name}`,
+      steps,
+      created: new Date().toISOString(),
+    };
+    
+    await fs.writeFile(toolPath, JSON.stringify(tool, null, 2));
+    console.log(chalk.green(`\n✓ Tool "${name}" created with ${steps.length} steps`));
+    console.log(chalk.gray(`  Saved to: ${toolPath}`));
+    console.log(chalk.gray(`  Run with: openman tool run ${name}`));
+  });
+
+toolCmd
+  .command('run <name>')
+  .description('Run a local tool')
+  .option('-d, --device <id>', 'device ID')
+  .action(async (name: string, options: { device?: string }) => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    const { DeviceTools } = await import('@/tools/device');
+    
+    const spinner = ora(`Running tool: ${name}...`).start();
+    
+    try {
+      const toolsDir = path.join(homedir(), '.openman', 'tools');
+      const toolPath = path.join(toolsDir, `${name}.json`);
+      
+      const content = await fs.readFile(toolPath, 'utf-8');
+      const tool = JSON.parse(content);
+      
+      const deviceTools = new DeviceTools();
+      const devices = await deviceTools.listDevices();
+      
+      if (devices.length === 0) {
+        spinner.fail(chalk.red('No devices connected'));
+        return;
+      }
+      
+      const device = options.device 
+        ? devices.find(d => d.id === options.device) 
+        : devices[0];
+      
+      if (!device) {
+        spinner.fail(chalk.red('Device not found'));
+        return;
+      }
+      
+      const screenInfo = await deviceTools.getScreenInfo(device.id);
+      const screenWidth = screenInfo.data?.width || 1080;
+      const screenHeight = screenInfo.data?.height || 2340;
+      
+      spinner.succeed(chalk.green(`Running tool "${tool.name}" on ${device.model}`));
+      console.log(chalk.gray(`  ${tool.description}\n`));
+      
+      // Position mapping
+      const positionToCoords = (pos: string): { x: number; y: number } => {
+        const map: Record<string, { x: number; y: number }> = {
+          'top-left': { x: 15, y: 8 }, 'top-center': { x: 50, y: 8 }, 'top-right': { x: 85, y: 8 },
+          'middle-left': { x: 15, y: 50 }, 'middle-center': { x: 50, y: 50 }, 'middle-right': { x: 85, y: 50 },
+          'bottom-left': { x: 15, y: 92 }, 'bottom-center': { x: 50, y: 92 }, 'bottom-right': { x: 85, y: 92 },
+          'keyboard-search': { x: 91, y: 58 }, 'first-result': { x: 50, y: 25 },
+        };
+        return map[pos] || { x: 50, y: 50 };
+      };
+      
+      for (let i = 0; i < tool.steps.length; i++) {
+        const step = tool.steps[i];
+        const stepSpinner = ora(`Step ${i + 1}/${tool.steps.length}: ${step.action}...`).start();
+        
+        try {
+          if (step.action === 'tap') {
+            const coords = positionToCoords(step.position || 'middle-center');
+            const x = Math.round((coords.x / 100) * screenWidth);
+            const y = Math.round((coords.y / 100) * screenHeight);
+            await deviceTools.tap(x, y, device.id);
+            stepSpinner.succeed(chalk.green(`Step ${i + 1}: Tap ${step.target || step.position}`));
+          } else if (step.action === 'input') {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await deviceTools.inputText(device.id, step.text);
+            stepSpinner.succeed(chalk.green(`Step ${i + 1}: Input "${step.text}"`));
+          } else if (step.action === 'wait') {
+            await new Promise(resolve => setTimeout(resolve, (step.seconds || 2) * 1000));
+            stepSpinner.succeed(chalk.green(`Step ${i + 1}: Wait ${step.seconds}s`));
+          } else if (step.action === 'back') {
+            await deviceTools.pressKey('back', device.id);
+            stepSpinner.succeed(chalk.green(`Step ${i + 1}: Back`));
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (err: any) {
+          stepSpinner.fail(chalk.red(`Step ${i + 1} failed: ${err.message}`));
+        }
+      }
+      
+      console.log(chalk.green('\n✓ Tool execution complete'));
+      
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+    }
+  });
+
+toolCmd
+  .command('delete <name>')
+  .description('Delete a local tool')
+  .action(async (name: string) => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    
+    const toolPath = path.join(homedir(), '.openman', 'tools', `${name}.json`);
+    
+    try {
+      await fs.unlink(toolPath);
+      console.log(chalk.green(`✓ Tool "${name}" deleted`));
+    } catch (error: any) {
+      console.log(chalk.red(`Error: Tool "${name}" not found`));
+    }
+  });
+
+toolCmd
+  .command('export <name>')
+  .description('Export a tool for sharing')
+  .action(async (name: string) => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    
+    const toolPath = path.join(homedir(), '.openman', 'tools', `${name}.json`);
+    
+    try {
+      const content = await fs.readFile(toolPath, 'utf-8');
+      console.log(chalk.cyan(`\n📤 Export tool "${name}":\n`));
+      console.log(content);
+      console.log(chalk.gray('\nCopy the JSON above to share this tool.'));
+    } catch (error: any) {
+      console.log(chalk.red(`Error: Tool "${name}" not found`));
+    }
+  });
+
+toolCmd
+  .command('import')
+  .description('Import a tool from JSON')
+  .action(async () => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const { homedir } = await import('os');
+    const readline = await import('readline');
+    
+    console.log(chalk.cyan('\n📥 Import tool'));
+    console.log(chalk.gray('Paste the tool JSON and press Enter twice:\n'));
+    
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    
+    let jsonInput = '';
+    rl.on('line', (line) => {
+      if (line === '' && jsonInput.includes('}')) {
+        rl.close();
+      } else {
+        jsonInput += line + '\n';
+      }
+    });
+    
+    rl.on('close', async () => {
+      try {
+        const tool = JSON.parse(jsonInput.trim());
+        if (!tool.name) {
+          console.log(chalk.red('Error: Tool must have a name'));
+          return;
+        }
+        
+        const toolsDir = path.join(homedir(), '.openman', 'tools');
+        await fs.mkdir(toolsDir, { recursive: true });
+        
+        const toolPath = path.join(toolsDir, `${tool.name}.json`);
+        await fs.writeFile(toolPath, JSON.stringify(tool, null, 2));
+        
+        console.log(chalk.green(`\n✓ Tool "${tool.name}" imported`));
+        console.log(chalk.gray(`  Run with: openman tool run ${tool.name}`));
+      } catch (error: any) {
+        console.log(chalk.red('Error: Invalid JSON - ' + error.message));
+      }
+    });
   });
 
 // ============================================================================

@@ -277,45 +277,27 @@ export class DeviceTools {
     }
 
     try {
-      // For any text, use virtual keyboard character-by-character input
-      // This is more reliable for Chinese and special characters
-      
-      // First try standard input (works for ASCII)
+      // Check if text contains non-ASCII (Chinese, etc.)
       const hasNonAscii = /[^\x00-\x7F]/.test(text);
       
       if (!hasNonAscii) {
+        // ASCII text - use standard input
         const escapedText = text.replace(/\s/g, '%s').replace(/'/g, "\\'");
         await execAsync(
           `${this.adbPath} -s ${device.id} shell input text '${escapedText}'`
         );
       } else {
-        // For Chinese: use content provider or keyevent input
-        // Method 1: Try using service call to insert text
-        try {
-          // Encode text and use input with virtual keyboard simulation
-          const encoded = encodeURIComponent(text);
-          await execAsync(
-            `${this.adbPath} -s ${device.id} shell "am broadcast -a ADB_INPUT_TEXT --es text '${encoded}'" 2>/dev/null || true`
-          );
-        } catch {
-          // Ignore broadcast errors
-        }
+        // Chinese text - convert to pinyin for input (device IME will show suggestions)
+        const pinyin = this.toPinyin(text);
+        console.log(`  📝 Chinese input: "${text}" → pinyin: "${pinyin}"`);
         
-        // Method 2: Type pinyin and let IME convert (simplified approach)
-        // For now, we'll note that Chinese input requires ADBKeyboard
-        console.log('  ⚠️ Chinese input may require ADBKeyboard app on device');
+        const escapedPinyin = pinyin.replace(/\s/g, '%s').replace(/'/g, "\\'");
+        await execAsync(
+          `${this.adbPath} -s ${device.id} shell input text '${escapedPinyin}'`
+        );
         
-        // Try direct Unicode input via service (may work on some devices)
-        const unicodeChars = [...text].map(c => c.charCodeAt(0));
-        for (const code of unicodeChars) {
-          try {
-            await execAsync(
-              `${this.adbPath} -s ${device.id} shell input text "$(printf '\\u${code.toString(16).padStart(4, '0')}')" 2>/dev/null || true`
-            );
-          } catch {
-            // Continue with next character
-          }
-        }
+        // Note: User should tap the first suggestion from IME
+        console.log(`  💡 Tip: Tap the first suggestion to select "${text}"`);
       }
       
       return {
@@ -418,6 +400,46 @@ export class DeviceTools {
         error: `Swipe failed: ${(error as Error).message}`,
       };
     }
+  }
+
+  /**
+   * Convert Chinese text to pinyin (simplified mapping for common characters)
+   */
+  private toPinyin(text: string): string {
+    // Common Chinese characters to pinyin mapping
+    const pinyinMap: Record<string, string> = {
+      '天': 'tian', '安': 'an', '门': 'men', '广': 'guang', '场': 'chang',
+      '北': 'bei', '京': 'jing', '站': 'zhan', '上': 'shang', '海': 'hai',
+      '西': 'xi', '东': 'dong', '南': 'nan', '中': 'zhong', '国': 'guo',
+      '大': 'da', '小': 'xiao', '路': 'lu', '街': 'jie', '区': 'qu',
+      '市': 'shi', '省': 'sheng', '县': 'xian', '镇': 'zhen', '村': 'cun',
+      '山': 'shan', '水': 'shui', '河': 'he', '湖': 'hu', '江': 'jiang',
+      '公': 'gong', '园': 'yuan', '医': 'yi', '院': 'yuan', '学': 'xue',
+      '校': 'xiao', '银': 'yin', '行': 'hang', '酒': 'jiu', '店': 'dian',
+      '餐': 'can', '厅': 'ting', '超': 'chao', '市': 'shi', '商': 'shang',
+      '城': 'cheng', '楼': 'lou', '机': 'ji', '火': 'huo', '车': 'che',
+      '地': 'di', '铁': 'tie', '高': 'gao', '铁': 'tie', '加': 'jia',
+      '油': 'you', '停': 'ting', '故': 'gu', '宫': 'gong', '长': 'chang',
+      '城': 'cheng', '颐': 'yi', '和': 'he', '圆': 'yuan', '明': 'ming',
+      '清': 'qing', '华': 'hua', '人': 'ren', '民': 'min', '英': 'ying',
+      '雄': 'xiong', '纪': 'ji', '念': 'nian', '碑': 'bei', '博': 'bo',
+      '物': 'wu', '馆': 'guan', '图': 'tu', '书': 'shu', '电': 'dian',
+      '影': 'ying', '快': 'kuai', '递': 'di', '外': 'wai', '卖': 'mai',
+    };
+    
+    let result = '';
+    for (const char of text) {
+      if (pinyinMap[char]) {
+        result += pinyinMap[char];
+      } else if (/[\x00-\x7F]/.test(char)) {
+        // ASCII character, keep as is
+        result += char;
+      } else {
+        // Unknown Chinese character, skip or use placeholder
+        result += char;
+      }
+    }
+    return result;
   }
 }
 
