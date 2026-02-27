@@ -94,7 +94,7 @@ export interface PageSnapshot {
 // Tool Types
 // ============================================================================
 
-export type ToolPermission = 'always' | 'ask' | 'never' | 'explicit';
+export type ToolPermission = 'always' | 'ask' | 'never' | 'explicit' | 'workspace' | 'sandboxed';
 
 export interface ToolConfig {
   permissions: {
@@ -132,6 +132,7 @@ export interface Task {
   description: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   subtasks?: Task[];
+  result?: string;
   createdAt: Date;
   completedAt?: Date;
 }

@@ -78,7 +78,7 @@ program
       await browser.initialize();
       spinner.text = `Navigating to ${url}...`;
 
-      const snapshot = await browser.navigate(url);
+      const { page, ...snapshot } = await browser.navigate(url);
       spinner.succeed(chalk.green('Navigation complete'));
 
       console.log(chalk.cyan('\n📄 Page Information:'));
@@ -87,7 +87,6 @@ program
       console.log(chalk.white(`  Text length: ${snapshot.text?.length || 0} characters`));
 
       if (options.screenshot) {
-        const page = await browser.newPage();
         await browser.screenshot(page, options.screenshot);
         console.log(chalk.green(`\n✓ Screenshot saved to ${options.screenshot}`));
       }
@@ -646,68 +645,12 @@ program
     displayLogs.forEach((log: any) => {
       const status = log.result === 'success' ? '✓' : '✗';
       const color = log.result === 'success' ? 'green' : 'red';
-      console.log(chalk[color(`\n  ${status} ${formatDate(new Date(log.timestamp))}`));
+      console.log((chalk as any)[color](`\n  ${status} ${formatDate(new Date(log.timestamp))}`));
       console.log(chalk.white(`     ${log.action}`));
       if (log.details) {
         console.log(chalk.gray(`     ${JSON.stringify(log.details, null, 2).substring(0, 100)}...`));
       }
     });
-  });
-
-program
-  .command('init')
-  .description('Initialize OpenMan configuration')
-  .action(async () => {
-    console.log(chalk.cyan('\n🚀 Initializing OpenMan...\n'));
-
-    const readline = await import('readline');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    // Get OpenAI API key
-    const openaiKey = await question(
-      rl,
-      chalk.cyan('Enter your OpenAI API key (or press Enter to skip): ')
-    );
-
-    // Get Anthropic API key
-    const anthropicKey = await question(
-      rl,
-      chalk.cyan('Enter your Anthropic API key (or press Enter to skip): ')
-    );
-
-    // Get Google API key
-    const googleKey = await question(
-      rl,
-      chalk.cyan('Enter your Google API key (or press Enter to skip): ')
-    );
-
-    rl.close();
-
-    // Update environment variables
-    if (openaiKey) process.env.OPENAI_API_KEY = openaiKey;
-    if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
-    if (googleKey) process.env.GOOGLE_API_KEY = googleKey;
-
-    // Validate configuration
-    const validation = config.validate();
-    if (!validation.valid) {
-      console.log(chalk.red('\n✗ Configuration errors:'));
-      validation.errors.forEach(error => {
-        console.log(chalk.red(`  - ${error}`));
-      });
-      process.exit(1);
-    }
-
-    // Save configuration
-    await config.save();
-
-    console.log(chalk.green('\n✓ OpenMan initialized successfully!'));
-    console.log(chalk.white('\nNext steps:'));
-    console.log(chalk.white('  npm run build'));
-    console.log(chalk.white('  npm run dev chat "Hello, OpenMan!"'));
   });
 
 // ============================================================================

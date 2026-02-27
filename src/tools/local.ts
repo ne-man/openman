@@ -215,8 +215,16 @@ export class LocalTools {
     }
 
     try {
+      // Escape shell special characters to prevent command injection
+      const escapeShellArg = (arg: string) => {
+        return "'" + arg.replace(/'/g, "'\\''") + "'";
+      };
+
+      const safePattern = escapeShellArg(pattern);
+      const safeDirectory = escapeShellArg(directory);
+
       const { stdout } = await execAsync(
-        `grep -r "${pattern}" ${directory} --include="*.ts" --include="*.js" --include="*.json" -l`
+        `grep -r ${safePattern} ${safeDirectory} --include="*.ts" --include="*.js" --include="*.json" -l`
       );
 
       const files = stdout.trim().split('\n').filter(Boolean);
