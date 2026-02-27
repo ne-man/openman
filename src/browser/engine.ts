@@ -72,7 +72,7 @@ export class BrowserEngine {
   public async navigate(
     url: string,
     options?: NavigationOptions
-  ): Promise<PageSnapshot> {
+  ): Promise<PageSnapshot & { page: Page }> {
     const page = await this.newPage();
 
     await auditLogger.log({
@@ -88,7 +88,8 @@ export class BrowserEngine {
       timeout: options?.timeout || 30000,
     });
 
-    return await this.snapshot(page);
+    const snapshot = await this.snapshot(page);
+    return { ...snapshot, page };
   }
 
   public async snapshot(page: Page): Promise<PageSnapshot> {

@@ -77,7 +77,7 @@ program
       await browser.initialize();
       spinner.text = `Navigating to ${url}...`;
 
-      const snapshot = await browser.navigate(url);
+      const { page, ...snapshot } = await browser.navigate(url);
       spinner.succeed(chalk.green('Navigation complete'));
 
       console.log(chalk.cyan('\n📄 Page Information:'));
@@ -86,7 +86,6 @@ program
       console.log(chalk.white(`  Text length: ${snapshot.text?.length || 0} characters`));
 
       if (options.screenshot) {
-        const page = await browser.newPage();
         await browser.screenshot(page, options.screenshot);
         console.log(chalk.green(`\n✓ Screenshot saved to ${options.screenshot}`));
       }
