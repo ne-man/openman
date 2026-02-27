@@ -637,82 +637,62 @@ export class WebAIService {
     if (!uploaded) {
       console.log('  🔍 尝试查找 + 按钮...');
       
-      // 元宝底部的 + 按钮
-      const plusButtonSelectors = [
-        // 直接匹配 + 文本或图标
-        'button:has(svg)',
-        '[class*="plus"]',
-        '[class*="add"]',
-        '[class*="more"]',
-        '[class*="action"] button',
-        '[class*="toolbar"] button',
-        '[class*="input"] button',
-        // SVG + 图标
-        'svg[class*="plus"]',
-        'svg[class*="add"]',
-      ];
+      // 先找到页面上所有可能的 + 按钮，只点击一次
+      const plusBtn = await page.evaluateHandle(() => {
+        // 查找包含 + 图标的按钮（元宝底部）
+        const buttons = document.querySelectorAll('button, [role="button"], div[class*="btn"]');
+        for (const btn of buttons) {
+          const rect = (btn as HTMLElement).getBoundingClientRect();
+          // 按钮在底部区域
+          if (rect.bottom > window.innerHeight - 100 && rect.width > 20 && rect.width < 60) {
+            const svg = btn.querySelector('svg');
+            if (svg) {
+              return btn;
+            }
+          }
+        }
+        return null;
+      });
 
-      for (const selector of plusButtonSelectors) {
+      if (plusBtn && (plusBtn as any).asElement()) {
         try {
-          const btn = await page.$(selector);
-          if (!btn) continue;
-          
-          const isVisible = await btn.evaluate((el: Element) => {
-            const style = window.getComputedStyle(el);
-            return style.display !== 'none' && style.visibility !== 'hidden' &&
-                   (el as HTMLElement).offsetWidth > 0;
-          });
-          if (!isVisible) continue;
-
-          await btn.click();
-          console.log(`  📎 点击 + 按钮`);
+          await (plusBtn as import('puppeteer').ElementHandle<Element>).click();
+          console.log('  📎 点击 + 按钮');
           await new Promise(resolve => setTimeout(resolve, 1000));
           
-          // Look for "图片" option in popup menu (元宝弹框)
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          let foundImageOption = false;
-          try {
-            // Find clickable element containing "图片" text
-            const imageOpt = await page.evaluateHandle(() => {
-              const elements = document.querySelectorAll('div, span, button, li, a, p');
-              for (const el of elements) {
-                const text = el.textContent?.trim();
-                // 精确匹配"图片"（元宝菜单项）
-                if (text === '图片' || text?.startsWith('图片')) {
-                  const rect = (el as HTMLElement).getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  if (rect.width > 0 && rect.height > 0 && style.display !== 'none') {
-                    console.log('Found 图片 option:', el.tagName, text);
-                    return el;
-                  }
+          // 查找并点击"图片"选项
+          const imageOpt = await page.evaluateHandle(() => {
+            const items = document.querySelectorAll('div, span, li, a, button');
+            for (const el of items) {
+              const text = el.textContent?.trim();
+              if (text === '图片') {
+                const rect = (el as HTMLElement).getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return el;
                 }
               }
-              return null;
-            });
+            }
+            return null;
+          });
+
+          if (imageOpt && (imageOpt as any).asElement()) {
+            await (imageOpt as import('puppeteer').ElementHandle<Element>).click();
+            console.log('  📷 选择"图片"选项');
+            await new Promise(resolve => setTimeout(resolve, 1000));
             
-            if (imageOpt && (imageOpt as any).asElement()) {
-              await (imageOpt as import('puppeteer').ElementHandle<Element>).click();
-              console.log(`  📷 选择"图片"选项`);
-              foundImageOption = true;
-              await new Promise(resolve => setTimeout(resolve, 1500));
-            }
-          } catch (e) {
-            console.log(`  ⚠️ 查找图片选项失败`);
-          }
-          
-          if (foundImageOption) {
-            // Now look for file input
-            const fileInput = await page.$('input[type="file"]');
-            if (fileInput) {
-              await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
-              uploaded = true;
-              console.log('  📷 图片已上传');
-              break;
+            // 查找 file input 并上传
+            const fileInputs = await page.$$('input[type="file"]');
+            for (const fileInput of fileInputs) {
+              try {
+                await fileInput.uploadFile(imagePath);
+                uploaded = true;
+                console.log('  ✅ 图片已上传');
+                break;
+              } catch { continue; }
             }
           }
-        } catch {
-          continue;
+        } catch (e) {
+          console.log('  ⚠️ + 按钮流程失败');
         }
       }
     }
