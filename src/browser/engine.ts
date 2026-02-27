@@ -20,6 +20,12 @@ export class BrowserEngine {
       return;
     }
 
+    // Try to connect to existing Chrome first
+    if (this.options?.browserWSEndpoint || this.options?.debuggingPort) {
+      await this.connectToExisting();
+      return;
+    }
+
     const headlessMode = this.options?.headless ?? true;
     const launchOptions: PuppeteerLaunchOptions = {
       headless: headlessMode,
@@ -37,9 +43,10 @@ export class BrowserEngine {
       launchOptions.executablePath = this.options.executablePath;
     }
 
-    // Add userDataDir if provided (for preserving Chrome login)
+    // Use user data directory for persistent login sessions
     if (this.options?.userDataDir) {
-      launchOptions.args.push(`--user-data-dir=${this.options.userDataDir}`);
+      const userDataDir = this.options.userDataDir.replace(/^~/, process.env.HOME || '');
+      launchOptions.userDataDir = userDataDir;
     }
 
     this.browser = await puppeteer.launch(launchOptions);
@@ -48,6 +55,35 @@ export class BrowserEngine {
       timestamp: new Date(),
       action: 'browser.initialize',
       details: { headless: headlessMode, userDataDir: this.options?.userDataDir },
+      result: 'success',
+      riskLevel: 'low',
+    });
+  }
+
+  /**
+   * Connect to an existing Chrome instance with remote debugging enabled
+   */
+  private async connectToExisting(): Promise<void> {
+    let browserWSEndpoint = this.options?.browserWSEndpoint;
+
+    // If only port provided, fetch the WebSocket endpoint
+    if (!browserWSEndpoint && this.options?.debuggingPort) {
+      const port = this.options.debuggingPort;
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`);
+      const data = await response.json() as { webSocketDebuggerUrl: string };
+      browserWSEndpoint = data.webSocketDebuggerUrl;
+    }
+
+    if (!browserWSEndpoint) {
+      throw new Error('Could not determine browser WebSocket endpoint');
+    }
+
+    this.browser = await puppeteer.connect({ browserWSEndpoint });
+
+    await auditLogger.log({
+      timestamp: new Date(),
+      action: 'browser.connect',
+      details: { endpoint: browserWSEndpoint },
       result: 'success',
       riskLevel: 'low',
     });

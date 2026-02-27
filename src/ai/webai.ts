@@ -66,39 +66,80 @@ export class WebAIService {
    */
   private async ensureInitialized(): Promise<void> {
     if (!this.initialized || !this.browserEngine) {
-      // Try to use Chrome's user data directory to preserve login
-      const launchOptions: any = {
-        headless: false, // Need non-headless to see browser
-        args: [
-          `--user-data-dir=${this.chromeUserDataDir}`,
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-        ],
-      };
+      // Check if CHROME_DEBUG_PORT is set to connect to existing Chrome
+      const debugPort = process.env.CHROME_DEBUG_PORT 
+        ? parseInt(process.env.CHROME_DEBUG_PORT, 10) 
+        : undefined;
 
-      // Try to connect to existing Chrome instance first
-      try {
-        // Check if Chrome is running with remote debugging
-        const { execSync } = require('child_process');
-        const isChromeRunning = execSync('pgrep -x "chrome" || pgrep -x "google-chrome" || echo "not running"', {
-          encoding: 'utf-8',
-        }).includes('chrome');
-
-        if (isChromeRunning) {
-          launchOptions.headless = false;
-        }
-      } catch {
-        // Chrome not running, will start new instance
+      if (debugPort) {
+        // Connect to existing Chrome with remote debugging
+        this.browserEngine = new BrowserEngine({
+          headless: false,
+          debuggingPort: debugPort,
+        });
+      } else {
+        // Launch new browser with persistent data
+        this.browserEngine = new BrowserEngine({
+          headless: false,
+          userDataDir: process.env.BROWSER_DATA_DIR || '~/.openman/browser',
+        });
       }
-
-      this.browserEngine = new BrowserEngine({
-        headless: launchOptions.headless,
-        userDataDir: this.chromeUserDataDir,
-      });
-      
       await this.browserEngine.initialize();
       this.initialized = true;
+    }
+  }
+
+  /**
+   * Check for and handle verification/captcha dialogs
+   */
+  private async handleVerificationDialog(page: import('puppeteer').Page): Promise<void> {
+    // Common verification dialog selectors
+    const verificationSelectors = [
+      '[class*="captcha"]',
+      '[class*="verify"]',
+      '[class*="verification"]',
+      '[id*="captcha"]',
+      '[id*="verify"]',
+      'iframe[src*="captcha"]',
+      '[class*="slider"]',
+      '[class*="puzzle"]',
+      '.modal[class*="security"]',
+      '[data-testid*="captcha"]',
+    ];
+
+    for (const selector of verificationSelectors) {
+      try {
+        const element = await page.$(selector);
+        if (element) {
+          const isVisible = await element.evaluate((el: Element) => {
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+          });
+
+          if (isVisible) {
+            console.log('\n⚠️  验证弹框检测到，请在浏览器中完成验证...');
+            console.log('   完成后程序将自动继续\n');
+
+            // Wait for verification to be completed (dialog disappears)
+            await page.waitForFunction(
+              (sel: string) => {
+                const el = document.querySelector(sel);
+                if (!el) return true;
+                const style = window.getComputedStyle(el);
+                return style.display === 'none' || style.visibility === 'hidden';
+              },
+              { timeout: 300000 }, // 5 minutes for manual verification
+              selector
+            );
+
+            console.log('✓ 验证完成，继续执行...\n');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return;
+          }
+        }
+      } catch {
+        // Selector not found or timeout, continue
+      }
     }
   }
 
@@ -175,43 +216,66 @@ export class WebAIService {
     // Navigate to the AI service
     const { page } = await this.browserEngine!.navigate(config.url);
 
-    // Wait for page to load
-    const inputSelector = config.inputSelector || 'textarea';
-    await page.waitForSelector(inputSelector, {
+    // Wait for page to fully load
+    await page.waitForSelector(config.inputSelector || 'textarea', {
       timeout: 15000,
     });
+    
+    // Extra wait for dynamic content
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Type the message
+    // Check for verification/captcha dialogs
+    await this.handleVerificationDialog(page);
+
+    // Focus and type the message
+    const inputSelector = config.inputSelector || 'textarea';
+    await page.click(inputSelector);
     await page.type(inputSelector, lastUserMessage.content, {
       delay: 30,
     });
 
-    // Press Enter to submit
-    await page.keyboard.press('Enter');
+    // Wait a bit before clicking submit
+    await new Promise(resolve => setTimeout(resolve, 500));
 
-    // Wait for response - poll for new content
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Try to submit - use keyboard Enter as fallback
+    try {
+      const submitSelector = config.submitSelector || 'button[type="submit"]';
+      await page.waitForSelector(submitSelector, { timeout: 3000 });
+      await page.click(submitSelector);
+    } catch {
+      // Fallback: press Enter to submit
+      await page.keyboard.press('Enter');
+    }
 
-    // Get page content for response
-    const responseText = await page.evaluate(() => {
-      // Try to find response content
-      const selectors = [
-        '[class*="message"]',
-        '[class*="response"]', 
-        '[class*="answer"]',
-        '[class*="content"]',
-        '.prose',
-        'body'
-      ];
-      
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el && el.textContent && el.textContent.length > 50) {
-          return el.textContent;
-        }
-      }
-      return document.body.innerText;
+    // Wait for AI response
+    const responseSelector = config.responseSelector || '.response';
+    
+    // Count existing messages before waiting
+    const initialCount = await page.$$eval(responseSelector, els => els.length);
+    
+    // Wait for a new response to appear (more elements than before)
+    await page.waitForFunction(
+      (selector: string, count: number) => {
+        const elements = document.querySelectorAll(selector);
+        return elements.length > count;
+      },
+      { timeout: config.responseTimeout || 60000 },
+      responseSelector,
+      initialCount
+    );
+
+    // Wait a bit for response to finish streaming
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Get the last response element (AI's reply)
+    const responseText = await page.$$eval(responseSelector, (els) => {
+      const lastEl = els[els.length - 1];
+      return lastEl ? lastEl.textContent || '' : '';
     });
+
+    if (!responseText) {
+      throw new Error('Response element not found');
+    }
 
     return {
       content: responseText.trim(),

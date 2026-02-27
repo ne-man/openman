@@ -865,6 +865,57 @@ webaiCmd
     }
   });
 
+webaiCmd
+  .command('login <name>')
+  .description('Open browser to login to a Web AI service (session will be saved)')
+  .action(async (name) => {
+    const spinner = ora(`Opening ${name} for login...`).start();
+
+    try {
+      const aiConfig = config.getWebAI(name);
+
+      if (!aiConfig) {
+        spinner.fail(chalk.red(`Web AI "${name}" not found`));
+        process.exit(1);
+      }
+
+      // Use persistent browser data directory
+      const browser = new BrowserEngine({
+        headless: false,
+        userDataDir: process.env.BROWSER_DATA_DIR || '~/.openman/browser',
+      });
+
+      await browser.initialize();
+      const { page } = await browser.navigate(aiConfig.url);
+
+      spinner.succeed(chalk.green('Browser opened'));
+      console.log(chalk.cyan('\n📋 Instructions:'));
+      console.log(chalk.white('  1. Login to ' + name + ' in the browser window'));
+      console.log(chalk.white('  2. After login, press Enter here to save session'));
+      console.log(chalk.gray('\n  (Your login will be saved for future use)\n'));
+
+      // Wait for user to press Enter
+      const readline = await import('readline');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+
+      await new Promise<void>((resolve) => {
+        rl.question(chalk.cyan('Press Enter after login... '), () => {
+          rl.close();
+          resolve();
+        });
+      });
+
+      await browser.close();
+      console.log(chalk.green('\n✓ Session saved! You can now use: openman webai chat ' + name + ' "message"'));
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
 // ============================================================================
 // Helper Functions
 // ============================================================================

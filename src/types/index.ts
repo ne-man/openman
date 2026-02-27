@@ -67,6 +67,9 @@ export interface BrowserConfig {
     height: number;
   };
   userAgent?: string;
+  // Connect to existing Chrome with remote debugging
+  debuggingPort?: number;  // e.g., 9222
+  browserWSEndpoint?: string;  // Direct WebSocket endpoint
 }
 
 export interface NavigationOptions {
