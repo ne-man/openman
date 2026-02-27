@@ -155,8 +155,8 @@ export class WebAIService {
     // Press Enter to submit
     await page.keyboard.press('Enter');
 
-    // Wait a bit for response to start appearing
-    await page.waitForTimeout(3000);
+    // Wait for response - poll for new content
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     // Get page content for response
     const responseText = await page.evaluate(() => {
