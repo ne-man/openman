@@ -633,16 +633,23 @@ export class WebAIService {
       }
     }
 
-    // Method 3: Click + button, then select "图片" from popup menu
+    // Method 3: Click + button, then select "图片" from popup menu (元宝)
     if (!uploaded) {
-      // 元宝用 + 号按钮，点击后有弹框选择"图片"
+      console.log('  🔍 尝试查找 + 按钮...');
+      
+      // 元宝底部的 + 按钮
       const plusButtonSelectors = [
+        // 直接匹配 + 文本或图标
+        'button:has(svg)',
         '[class*="plus"]',
-        '[class*="add-btn"]',
-        'button[class*="add"]',
-        'svg[class*="plus"]',
-        '[data-testid*="plus"]',
+        '[class*="add"]',
         '[class*="more"]',
+        '[class*="action"] button',
+        '[class*="toolbar"] button',
+        '[class*="input"] button',
+        // SVG + 图标
+        'svg[class*="plus"]',
+        'svg[class*="add"]',
       ];
 
       for (const selector of plusButtonSelectors) {
@@ -661,44 +668,37 @@ export class WebAIService {
           console.log(`  📎 点击 + 按钮`);
           await new Promise(resolve => setTimeout(resolve, 1000));
           
-          // Look for "图片" option in popup menu
-          const imageOptionSelectors = [
-            'text/图片',
-            '[class*="menu"] >> text/图片',
-            '[class*="popup"] >> text/图片',
-            '[class*="dropdown"] >> text/图片',
-            'div:has-text("图片")',
-            'span:has-text("图片")',
-            'button:has-text("图片")',
-            '[aria-label*="图片"]',
-          ];
+          // Look for "图片" option in popup menu (元宝弹框)
+          await new Promise(resolve => setTimeout(resolve, 500));
           
           let foundImageOption = false;
-          for (const optSelector of imageOptionSelectors) {
-            try {
-              // Find element containing "图片" text
-              const imageOpt = await page.evaluateHandle(() => {
-                const elements = document.querySelectorAll('div, span, button, li, a');
-                for (const el of elements) {
-                  if (el.textContent?.includes('图片') && 
-                      (el as HTMLElement).offsetWidth > 0 &&
-                      window.getComputedStyle(el).display !== 'none') {
+          try {
+            // Find clickable element containing "图片" text
+            const imageOpt = await page.evaluateHandle(() => {
+              const elements = document.querySelectorAll('div, span, button, li, a, p');
+              for (const el of elements) {
+                const text = el.textContent?.trim();
+                // 精确匹配"图片"（元宝菜单项）
+                if (text === '图片' || text?.startsWith('图片')) {
+                  const rect = (el as HTMLElement).getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  if (rect.width > 0 && rect.height > 0 && style.display !== 'none') {
+                    console.log('Found 图片 option:', el.tagName, text);
                     return el;
                   }
                 }
-                return null;
-              });
-              
-              if (imageOpt) {
-                await (imageOpt as import('puppeteer').ElementHandle<Element>).click();
-                console.log(`  📷 选择"图片"选项`);
-                foundImageOption = true;
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                break;
               }
-            } catch {
-              continue;
+              return null;
+            });
+            
+            if (imageOpt && (imageOpt as any).asElement()) {
+              await (imageOpt as import('puppeteer').ElementHandle<Element>).click();
+              console.log(`  📷 选择"图片"选项`);
+              foundImageOption = true;
+              await new Promise(resolve => setTimeout(resolve, 1500));
             }
+          } catch (e) {
+            console.log(`  ⚠️ 查找图片选项失败`);
           }
           
           if (foundImageOption) {
