@@ -50,12 +50,10 @@ const DEFAULT_SELECTORS: Record<string, Partial<WebAIConfig>> = {
     responseTimeout: 60000,
   },
   'yuanbao.tencent.com': {
-    inputSelector: 'textarea, [contenteditable="true"]',
-    submitSelector: 'button[class*="send"], button[type="submit"], [class*="submit"]',
-    responseSelector: '[class*="message"], [class*="response"], [class*="answer"], [class*="content"]',
-    responseTimeout: 60000,
-    // 元宝用 + 号按钮上传图片
-    imageUploadButton: '[class*="plus"], [class*="add"], button[aria-label*="+"], [class*="upload"]',
+    inputSelector: 'textarea',
+    submitSelector: 'button[class*="send"]',
+    responseSelector: '[class*="markdown"]',
+    responseTimeout: 120000,
   },
 };
 
@@ -548,11 +546,21 @@ export class WebAIService {
     // Navigate to the AI service
     const { page } = await this.browserEngine!.navigate(config.url);
 
-    // Wait for page to load
-    await page.waitForSelector(config.inputSelector || 'textarea', {
-      timeout: 15000,
-    });
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Wait for page to load - try multiple selectors
+    const inputSelectors = ['textarea', '[contenteditable="true"]', '[class*="input"]', '[class*="editor"]'];
+    let foundInput = false;
+    for (const sel of inputSelectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 5000 });
+        foundInput = true;
+        console.log(`  ✓ 找到输入框: ${sel}`);
+        break;
+      } catch { continue; }
+    }
+    if (!foundInput) {
+      console.log('  ⚠️ 未找到输入框，等待页面加载...');
+    }
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Check for verification dialogs - pass configName for fallback
     await this.handleVerificationDialog(page, configName);
@@ -620,11 +628,26 @@ export class WebAIService {
       console.log('  ⚠️ 未找到图片上传入口，将只发送文本');
     }
 
-    // Input query using CDP insertText (paste-like)
-    const inputSelector = config.inputSelector || 'textarea';
-    await page.click(inputSelector);
+    // Find and click input element
+    const possibleInputs = ['textarea', '[contenteditable="true"]', '[class*="input"]'];
+    let inputClicked = false;
+    for (const sel of possibleInputs) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          await el.click();
+          inputClicked = true;
+          break;
+        }
+      } catch { continue; }
+    }
     
-    // Clear and insert text at once
+    if (!inputClicked) {
+      // Click somewhere in the page to focus
+      await page.click('body');
+    }
+    
+    // Clear and insert text using CDP
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyA');
     await page.keyboard.up('Control');
@@ -640,19 +663,26 @@ export class WebAIService {
 
     // Wait for response
     const responseSelector = config.responseSelector || '.response';
+    console.log(`  🔍 等待响应 (selector: ${responseSelector})...`);
+    
     const initialCount = await page.$$eval(responseSelector, els => els.length);
+    console.log(`  📊 当前消息数: ${initialCount}`);
 
-    await page.waitForFunction(
-      (selector: string, count: number) => {
-        const elements = document.querySelectorAll(selector);
-        return elements.length > count;
-      },
-      { timeout: config.responseTimeout || 120000 },
-      responseSelector,
-      initialCount
-    );
+    try {
+      await page.waitForFunction(
+        (selector: string, count: number) => {
+          const elements = document.querySelectorAll(selector);
+          return elements.length > count;
+        },
+        { timeout: config.responseTimeout || 120000 },
+        responseSelector,
+        initialCount
+      );
+    } catch (waitError) {
+      console.log(`  ⚠️ 等待响应超时，尝试获取当前内容`);
+    }
 
-    // Wait for AI to finish responding (check for loading indicators)
+    // Wait for AI to finish responding
     await this.waitForResponseComplete(page, responseSelector);
 
     // Get response
@@ -660,6 +690,8 @@ export class WebAIService {
       const lastEl = els[els.length - 1];
       return lastEl ? lastEl.textContent || '' : '';
     });
+    
+    console.log(`  📝 响应长度: ${responseText.length} 字符`);
 
     // Save page for follow-up questions
     this.activePage = page;
