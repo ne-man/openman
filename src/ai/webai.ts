@@ -295,6 +295,140 @@ export class WebAIService {
   }
 
   /**
+   * Send a query with an image to a Web AI
+   */
+  public async queryWithImage(configName: string, imagePath: string, query: string): Promise<string> {
+    await this.ensureInitialized();
+
+    const config = this.configs.get(configName);
+    if (!config) {
+      throw new Error(`Web AI config not found: ${configName}`);
+    }
+
+    // Navigate to the AI service
+    const { page } = await this.browserEngine!.navigate(config.url);
+
+    // Wait for page to load
+    await page.waitForSelector(config.inputSelector || 'textarea', {
+      timeout: 15000,
+    });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Check for verification dialogs
+    await this.handleVerificationDialog(page);
+
+    // Common image upload selectors for different AI services
+    const imageUploadSelectors = [
+      'input[type="file"]',
+      '[data-testid="image-upload"]',
+      '[class*="upload"] input[type="file"]',
+      'button[aria-label*="图片"], button[aria-label*="image"], button[aria-label*="上传"]',
+      '[class*="attach"] input[type="file"]',
+    ];
+
+    let uploaded = false;
+
+    // Try to find and use file input
+    for (const selector of imageUploadSelectors) {
+      try {
+        const fileInput = await page.$(selector);
+        if (fileInput) {
+          const tagName = await fileInput.evaluate((el: Element) => el.tagName.toLowerCase());
+          if (tagName === 'input') {
+            // Direct file input
+            await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
+            uploaded = true;
+            console.log('  📷 图片已上传');
+            break;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    // If no file input found, try clicking upload button first
+    if (!uploaded) {
+      const uploadButtonSelectors = [
+        'button[aria-label*="图片"]',
+        'button[aria-label*="上传"]',
+        'button[aria-label*="image"]',
+        'button[aria-label*="upload"]',
+        '[class*="image-upload"]',
+        '[class*="upload-btn"]',
+        '[data-testid*="upload"]',
+      ];
+
+      for (const selector of uploadButtonSelectors) {
+        try {
+          await page.click(selector);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Now look for file input that may have appeared
+          const fileInput = await page.$('input[type="file"]');
+          if (fileInput) {
+            await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
+            uploaded = true;
+            console.log('  📷 图片已上传');
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    if (!uploaded) {
+      console.log('  ⚠️ 未找到图片上传入口，将只发送文本');
+    }
+
+    // Wait for upload to process
+    if (uploaded) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Type the query
+    const inputSelector = config.inputSelector || 'textarea';
+    await page.click(inputSelector);
+    await page.type(inputSelector, query, { delay: 30 });
+
+    // Submit
+    await new Promise(resolve => setTimeout(resolve, 500));
+    try {
+      const submitSelector = config.submitSelector || 'button[type="submit"]';
+      await page.waitForSelector(submitSelector, { timeout: 3000 });
+      await page.click(submitSelector);
+    } catch {
+      await page.keyboard.press('Enter');
+    }
+
+    // Wait for response
+    const responseSelector = config.responseSelector || '.response';
+    const initialCount = await page.$$eval(responseSelector, els => els.length);
+
+    await page.waitForFunction(
+      (selector: string, count: number) => {
+        const elements = document.querySelectorAll(selector);
+        return elements.length > count;
+      },
+      { timeout: config.responseTimeout || 120000 },
+      responseSelector,
+      initialCount
+    );
+
+    // Wait longer for image analysis
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Get response
+    const responseText = await page.$$eval(responseSelector, (els) => {
+      const lastEl = els[els.length - 1];
+      return lastEl ? lastEl.textContent || '' : '';
+    });
+
+    return responseText.trim();
+  }
+
+  /**
    * Close browser
    */
   public async close(): Promise<void> {

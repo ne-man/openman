@@ -1187,14 +1187,19 @@ program
         webAIService.addConfig(aiConfig);
 
         // Build prompt for Web AI
-        let prompt = options.prompt || 'Please analyze this screenshot and describe what you see.';
+        let prompt = options.prompt || '请分析这张图片，描述你看到的内容';
         if (options.elements) {
-          prompt = 'Please identify all UI elements in this screenshot (buttons, input fields, icons, etc.)';
+          prompt = '请识别这张截图中的所有UI元素（按钮、输入框、图标等）';
         } else if (options.suggest !== undefined) {
-          prompt = `Please analyze this screenshot and suggest actions to achieve: ${options.suggest}`;
+          prompt = `请分析这张截图并建议如何操作来实现: ${options.suggest}`;
         }
 
-        const result = await webAIService.query(webAIName, prompt);
+        // Resolve image path
+        const path = await import('path');
+        const imagePath = path.resolve(image);
+
+        spinner.text = 'Uploading image and analyzing...';
+        const result = await webAIService.queryWithImage(webAIName, imagePath, prompt);
 
         spinner.succeed(chalk.green('Analysis complete'));
         console.log(chalk.cyan(`\n🔍 Analysis Result (Web AI - ${webAIName}):`));
