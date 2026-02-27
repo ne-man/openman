@@ -436,6 +436,292 @@ action: tap/input/wait/back(返回键)`;
   });
 
 // ============================================================================
+// Explore Command - Autonomous App Feature Exploration
+// ============================================================================
+
+program
+  .command('explore <goal...>')
+  .description('Autonomously explore app features and generate product documentation')
+  .option('-d, --device <id>', 'specific device ID')
+  .option('-t, --timeout <minutes>', 'timeout in minutes (safety limit)', '10')
+  .option('-v, --verbose', 'show detailed output')
+  .action(async (goal: string[], options: { device?: string; timeout?: string; verbose?: boolean }) => {
+    const explorationGoal = goal.join(' ');
+    const timeoutMinutes = parseInt(options.timeout || '10');
+    const maxSafetySteps = 50; // Safety limit only
+    const startTime = Date.now();
+    const spinner = ora('Initializing exploration...').start();
+
+    try {
+      const { DeviceTools } = await import('@/tools/device');
+      const { webAIService } = await import('@/ai/webai');
+      const fs = await import('fs/promises');
+      const path = await import('path');
+
+      const deviceTools = new DeviceTools();
+
+      // Step 1: Connect device
+      spinner.text = '🔍 Detecting connected devices...';
+      const devices = await deviceTools.listDevices();
+      
+      if (devices.length === 0) {
+        spinner.fail(chalk.red('No devices connected'));
+        process.exit(1);
+      }
+
+      let targetDevice = devices[0];
+      if (options.device) {
+        const found = devices.find(d => d.id === options.device);
+        if (found) targetDevice = found;
+      }
+
+      spinner.succeed(chalk.green(`Device: ${targetDevice.model} (${targetDevice.id})`));
+
+      // Get screen size
+      const screenInfo = await deviceTools.getScreenInfo(targetDevice.id);
+      const screenWidth = screenInfo.data?.width || 1080;
+      const screenHeight = screenInfo.data?.height || 2340;
+
+      // Setup Web AI with multi-channel support
+      webAIService.ensureDefaultConfigs();
+      const webAIs = config.listWebAIs();
+      for (const webAI of webAIs) {
+        webAIService.addConfig(webAI);
+      }
+      const availableChannels = webAIService.getAvailableConfigs();
+      console.log(chalk.gray(`   📡 Available channels: ${availableChannels.join(', ')}`));
+
+      // Exploration state
+      const explorationLog: Array<{
+        step: number;
+        action: string;
+        observation: string;
+        screenshot: string;
+      }> = [];
+
+      console.log(chalk.cyan('\n' + '='.repeat(60)));
+      console.log(chalk.cyan('🔬 Autonomous Exploration Mode'));
+      console.log(chalk.cyan('='.repeat(60)));
+      console.log(chalk.white(`\n🎯 Goal: ${explorationGoal}`));
+      console.log(chalk.white(`📱 Device: ${targetDevice.model}`));
+      console.log(chalk.white(`⏱️ Timeout: ${timeoutMinutes} minutes\n`));
+
+      // Position mapping
+      const positionToCoords = (pos: string): { x: number; y: number } => {
+        const map: Record<string, { x: number; y: number }> = {
+          'top-left': { x: 15, y: 8 }, 'top-center': { x: 50, y: 8 }, 'top-right': { x: 85, y: 8 },
+          'middle-left': { x: 15, y: 50 }, 'middle-center': { x: 50, y: 50 }, 'middle-right': { x: 85, y: 50 },
+          'bottom-left': { x: 15, y: 92 }, 'bottom-center': { x: 50, y: 92 }, 'bottom-right': { x: 85, y: 92 },
+          'search-box': { x: 50, y: 8 }, 'keyboard-search': { x: 91, y: 58 }, 'first-result': { x: 50, y: 25 },
+        };
+        return map[pos] || { x: 50, y: 50 };
+      };
+
+      // Exploration loop - no fixed step limit, AI decides when done
+      let step = 0;
+      let consecutiveErrors = 0;
+      const maxConsecutiveErrors = 3;
+
+      while (step < maxSafetySteps) {
+        step++;
+        
+        // Check timeout
+        const elapsedMinutes = (Date.now() - startTime) / 60000;
+        if (elapsedMinutes >= timeoutMinutes) {
+          console.log(chalk.yellow(`\n⏱️ Timeout reached (${timeoutMinutes} min). Generating report...\n`));
+          break;
+        }
+
+        spinner.start(`📸 Step ${step}: Capturing screen... (${Math.round(elapsedMinutes)}/${timeoutMinutes} min)`);
+        
+        // Take screenshot
+        const screenshotResult = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
+        if (!screenshotResult.success || !screenshotResult.data?.path) {
+          spinner.warn(chalk.yellow(`Step ${step}: Screenshot failed, retrying...`));
+          consecutiveErrors++;
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            console.log(chalk.red('\n❌ Too many consecutive errors. Stopping exploration.\n'));
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        consecutiveErrors = 0;
+        const screenshotPath = screenshotResult.data.path;
+
+        // Ask AI what to do next
+        spinner.text = `🤖 Step ${step}: AI analyzing...`;
+        
+        const explorePrompt = step === 1 
+          ? `你是APP产品体验专家。目标: ${explorationGoal}
+
+分析截图，返回下一步操作JSON（只返回JSON）:
+{"screen":"界面名","obs":"功能观察","action":{"do":"tap/input/swipe/back/done","target":"目标","pos":"位置","text":"输入文本"},"plan":["待探索功能"]}
+
+pos值: top-left/top-center/top-right/middle-left/middle-center/middle-right/bottom-left/bottom-center/bottom-right/search-box/first-result
+do=done表示探索完成，可生成报告`
+          : `继续探索: ${explorationGoal}
+
+已操作:
+${explorationLog.slice(-5).map(l => `${l.step}. ${l.action}: ${l.observation.slice(0, 50)}`).join('\n')}
+
+返回JSON:
+{"screen":"界面","obs":"新发现","action":{"do":"tap/input/swipe/back/done","target":"目标","pos":"位置","text":"文本"},"todo":["待做"]}
+
+充分体验后设do=done`;
+
+        let aiResponse = '';
+        let usedChannel = '';
+        try {
+          // Use multi-channel fallback - auto switch when verification needed
+          const result = await webAIService.queryWithImageFallback(screenshotPath, explorePrompt);
+          aiResponse = result.response;
+          usedChannel = result.usedConfig;
+          if (usedChannel) {
+            spinner.text = `🤖 Step ${step}: Response from ${usedChannel}`;
+          }
+        } catch (error: any) {
+          spinner.warn(chalk.yellow(`Step ${step}: All channels failed - ${error.message?.slice(0, 50)}`));
+          consecutiveErrors++;
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            console.log(chalk.red('\n❌ Too many AI errors. Generating report with collected data.\n'));
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          continue;
+        }
+        consecutiveErrors = 0;
+        
+        // Parse response
+        let actionPlan: any = null;
+        try {
+          const jsonMatch = aiResponse.match(/\{[\s\S]*?\}(?=\s*$|\s*[^{])/);
+          if (jsonMatch) actionPlan = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          // Try to find any JSON object
+          try {
+            const allJson = aiResponse.match(/\{[^{}]*\}/g);
+            if (allJson) actionPlan = JSON.parse(allJson[0]);
+          } catch (e2) {}
+        }
+
+        if (!actionPlan) {
+          spinner.info(chalk.gray(`Step ${step}: Free-form response`));
+          explorationLog.push({ step, action: 'observe', observation: aiResponse.slice(0, 300), screenshot: screenshotPath });
+          // Ask AI to continue with structured response
+          continue;
+        }
+
+        const screen = actionPlan.screen || actionPlan.current_screen || '界面';
+        const obs = actionPlan.obs || actionPlan.observation || '';
+        spinner.succeed(chalk.green(`Step ${step}: ${screen}`));
+        
+        // Log observation
+        if (obs) console.log(chalk.gray(`   📍 ${obs}`));
+
+        // Check if done
+        const actionDo = actionPlan.action?.do || actionPlan.action?.action || actionPlan.next_action?.action;
+        if (actionDo === 'done') {
+          explorationLog.push({ step, action: 'done', observation: obs, screenshot: screenshotPath });
+          console.log(chalk.green('\n✅ AI determined exploration complete!\n'));
+          break;
+        }
+
+        // Execute action
+        const action = actionPlan.action || actionPlan.next_action || {};
+        const actionType = action.do || action.action || 'tap';
+        let actionDesc = '';
+
+        try {
+          if (actionType === 'tap') {
+            const pos = action.pos || action.position || 'middle-center';
+            const coords = positionToCoords(pos);
+            const x = Math.round((coords.x / 100) * screenWidth);
+            const y = Math.round((coords.y / 100) * screenHeight);
+            await deviceTools.tap(x, y, targetDevice.id);
+            actionDesc = `tap ${action.target || '元素'} (${pos})`;
+            console.log(chalk.blue(`   👆 Tap: ${action.target || pos}`));
+          } else if (actionType === 'input') {
+            const text = action.text || '';
+            await deviceTools.inputText(text, targetDevice.id);
+            actionDesc = `input "${text}"`;
+            console.log(chalk.blue(`   ⌨️ Input: ${text}`));
+          } else if (actionType === 'swipe') {
+            const dir = action.direction || 'up';
+            if (dir === 'up') {
+              await deviceTools.swipe(screenWidth / 2, screenHeight * 0.7, screenWidth / 2, screenHeight * 0.3, targetDevice.id);
+            } else if (dir === 'down') {
+              await deviceTools.swipe(screenWidth / 2, screenHeight * 0.3, screenWidth / 2, screenHeight * 0.7, targetDevice.id);
+            }
+            actionDesc = `swipe ${dir}`;
+            console.log(chalk.blue(`   👆 Swipe ${dir}`));
+          } else if (actionType === 'back') {
+            await deviceTools.pressKey('KEYCODE_BACK', targetDevice.id);
+            actionDesc = 'back';
+            console.log(chalk.blue(`   ⬅️ Back`));
+          }
+        } catch (actionError: any) {
+          spinner.warn(chalk.yellow(`Action failed: ${actionError.message?.slice(0, 30)}`));
+          actionDesc = `failed: ${actionType}`;
+        }
+
+        explorationLog.push({ step, action: actionDesc, observation: obs, screenshot: screenshotPath });
+
+        // Wait for UI to settle
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+
+      if (step >= maxSafetySteps) {
+        console.log(chalk.yellow(`\n⚠️ Safety limit reached (${maxSafetySteps} steps). Generating report...\n`));
+      }
+
+      // Generate product documentation
+      console.log(chalk.cyan('\n' + '='.repeat(60)));
+      console.log(chalk.cyan('📝 Generating Product Documentation...'));
+      console.log(chalk.cyan('='.repeat(60)));
+
+      spinner.start('🤖 AI generating documentation based on exploration...');
+
+      const docPrompt = `基于以下APP探索记录，生成产品说明文档。
+
+探索目标: ${explorationGoal}
+设备: ${targetDevice.model}
+
+探索记录:
+${explorationLog.map(l => `Step ${l.step}: ${l.action}
+观察: ${l.observation}`).join('\n\n')}
+
+请输出完整的产品说明文档，包括:
+1. 功能概述
+2. 界面布局与设计
+3. 核心功能点（基于实际操作体验）
+4. 交互流程
+5. 用户体验评价
+6. 改进建议`;
+
+      const documentation = await webAIService.followUp(docPrompt);
+      
+      spinner.succeed(chalk.green('Documentation generated'));
+
+      console.log(chalk.cyan('\n📋 Product Documentation:\n'));
+      console.log(chalk.white(documentation));
+
+      // Save documentation
+      const docPath = path.join(process.env.HOME || '~', '.openman', 'docs', `explore-${Date.now()}.md`);
+      await fs.mkdir(path.dirname(docPath), { recursive: true });
+      await fs.writeFile(docPath, `# ${explorationGoal}\n\n${documentation}`);
+      console.log(chalk.gray(`\n📁 Saved to: ${docPath}`));
+
+      await webAIService.close();
+
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      if (options.verbose) console.error(error);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
 // Status Command
 // ============================================================================
 
