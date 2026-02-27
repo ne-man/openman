@@ -50,10 +50,22 @@ const DEFAULT_SELECTORS: Record<string, Partial<WebAIConfig>> = {
 
 export class WebAIService {
   private configs: Map<string, WebAIConfig> = new Map();
-  private browserEngine: BrowserEngine;
+  private browserEngine: BrowserEngine | null = null;
+  private initialized = false;
 
   constructor() {
-    this.browserEngine = new BrowserEngine();
+    // Browser will be initialized on first use
+  }
+
+  /**
+   * Ensure browser is initialized
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized || !this.browserEngine) {
+      this.browserEngine = new BrowserEngine();
+      await this.browserEngine.initialize();
+      this.initialized = true;
+    }
   }
 
   /**
@@ -100,6 +112,8 @@ export class WebAIService {
     configName: string,
     messages: AIMessage[]
   ): Promise<AIResponse> {
+    await this.ensureInitialized();
+
     const config = this.configs.get(configName);
     if (!config) {
       throw new Error(`Web AI config not found: ${configName}`);
@@ -125,10 +139,7 @@ export class WebAIService {
     }
 
     // Navigate to the AI service
-    await this.browserEngine.navigate(config.url);
-
-    // Get page
-    const page = await this.getPage();
+    const { page } = await this.browserEngine!.navigate(config.url);
 
     // Wait for page to load
     await page.waitForSelector(config.inputSelector || 'textarea', {
@@ -178,7 +189,11 @@ export class WebAIService {
    * Close browser
    */
   public async close(): Promise<void> {
-    await this.browserEngine.close();
+    if (this.browserEngine) {
+      await this.browserEngine.close();
+      this.browserEngine = null;
+      this.initialized = false;
+    }
   }
 
   /**
@@ -191,14 +206,6 @@ export class WebAIService {
     } catch {
       return '';
     }
-  }
-
-  /**
-   * Get page from browser engine
-   */
-  private async getPage(): Promise<any> {
-    // Access the internal page from BrowserEngine
-    return (this.browserEngine as any).page;
   }
 }
 

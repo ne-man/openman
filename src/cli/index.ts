@@ -1009,43 +1009,76 @@ program
   .option('-p, --prompt <text>', 'custom analysis prompt')
   .option('--elements', 'find UI elements')
   .option('--suggest [goal]', 'suggest actions')
+  .option('-a, --ai <provider>', 'AI provider (openai, webai)', 'openai')
+  .option('-w, --webai <name>', 'Web AI name (e.g., doubao, claude)')
   .action(async (image, options) => {
     const spinner = ora('Analyzing image...').start();
 
     try {
-      const { imageAnalyzer } = await import('@/ai/vision');
+      const provider = options.ai || 'openai';
 
-      if (!imageAnalyzer.isAvailable()) {
-        spinner.fail(chalk.red('OpenAI API key not configured. Set OPENAI_API_KEY environment variable.'));
-        process.exit(1);
-      }
+      if (provider === 'openai') {
+        const { imageAnalyzer } = await import('@/ai/vision');
 
-      let result;
-      if (options.elements) {
-        result = await imageAnalyzer.findUIElements(image);
-      } else if (options.suggest !== undefined) {
-        result = await imageAnalyzer.suggestActions(image, options.suggest);
-      } else {
-        result = await imageAnalyzer.analyzeImage(image, options.prompt);
-      }
+        if (!imageAnalyzer.isAvailable()) {
+          spinner.fail(chalk.red('OpenAI API key not configured. Use --ai webai to use Web AI instead.'));
+          process.exit(1);
+        }
 
-      spinner.succeed(chalk.green('Analysis complete'));
+        let result;
+        if (options.elements) {
+          result = await imageAnalyzer.findUIElements(image);
+        } else if (options.suggest !== undefined) {
+          result = await imageAnalyzer.suggestActions(image, options.suggest);
+        } else {
+          result = await imageAnalyzer.analyzeImage(image, options.prompt);
+        }
 
-      console.log(chalk.cyan('\n🔍 Analysis Result:'));
-      console.log(chalk.white(`\n${result.description}`));
+        spinner.succeed(chalk.green('Analysis complete'));
 
-      if (result.elements && result.elements.length > 0) {
-        console.log(chalk.cyan('\n📋 UI Elements:'));
-        result.elements.forEach((el, i) => {
-          console.log(chalk.white(`  ${i + 1}. ${el}`));
-        });
-      }
+        console.log(chalk.cyan('\n🔍 Analysis Result (OpenAI):'));
+        console.log(chalk.white(`\n${result.description}`));
 
-      if (result.suggestions && result.suggestions.length > 0) {
-        console.log(chalk.cyan('\n💡 Suggestions:'));
-        result.suggestions.forEach((s, i) => {
-          console.log(chalk.white(`  ${i + 1}. ${s}`));
-        });
+        if (result.elements && result.elements.length > 0) {
+          console.log(chalk.cyan('\n📋 UI Elements:'));
+          result.elements.forEach((el, i) => {
+            console.log(chalk.white(`  ${i + 1}. ${el}`));
+          });
+        }
+
+        if (result.suggestions && result.suggestions.length > 0) {
+          console.log(chalk.cyan('\n💡 Suggestions:'));
+          result.suggestions.forEach((s, i) => {
+            console.log(chalk.white(`  ${i + 1}. ${s}`));
+          });
+        }
+      } else if (provider === 'webai') {
+        const { webAIService } = await import('@/ai/webai');
+        const webAIName = options.webai || 'doubao';
+        const aiConfig = config.getWebAI(webAIName);
+
+        if (!aiConfig) {
+          spinner.fail(chalk.red(`Web AI "${webAIName}" not found. Use: openman webai list`));
+          process.exit(1);
+        }
+
+        webAIService.addConfig(aiConfig);
+
+        // Build prompt for Web AI
+        let prompt = options.prompt || 'Please analyze this screenshot and describe what you see.';
+        if (options.elements) {
+          prompt = 'Please identify all UI elements in this screenshot (buttons, input fields, icons, etc.)';
+        } else if (options.suggest !== undefined) {
+          prompt = `Please analyze this screenshot and suggest actions to achieve: ${options.suggest}`;
+        }
+
+        const result = await webAIService.query(webAIName, prompt);
+
+        spinner.succeed(chalk.green('Analysis complete'));
+        console.log(chalk.cyan(`\n🔍 Analysis Result (Web AI - ${webAIName}):`));
+        console.log(chalk.white(`\n${result}`));
+
+        await webAIService.close();
       }
     } catch (error: any) {
       spinner.fail(chalk.red('Error: ' + error.message));
@@ -1063,6 +1096,8 @@ program
   .option('-d, --device <id>', 'device ID')
   .option('-g, --goal <text>', 'analysis goal')
   .option('--no-analyze', 'skip analysis, just capture')
+  .option('-a, --ai <provider>', 'AI provider (openai, webai)', 'openai')
+  .option('-w, --webai <name>', 'Web AI name (e.g., doubao, claude)')
   .action(async (options) => {
     const spinner = ora('Taking screenshot...').start();
 
@@ -1084,40 +1119,75 @@ program
 
       // Analyze if requested
       if (options.analyze !== false) {
-        const analyzeSpinner = ora('Analyzing screenshot...').start();
+        const provider = options.ai || 'openai';
 
-        try {
-          const { imageAnalyzer } = await import('@/ai/vision');
+        if (provider === 'openai') {
+          const analyzeSpinner = ora('Analyzing screenshot...').start();
 
-          if (!imageAnalyzer.isAvailable()) {
-            analyzeSpinner.warn(chalk.yellow('OpenAI API not configured, skipping analysis'));
-            console.log(chalk.gray('Set OPENAI_API_KEY to enable analysis'));
-            return;
+          try {
+            const { imageAnalyzer } = await import('@/ai/vision');
+
+            if (!imageAnalyzer.isAvailable()) {
+              analyzeSpinner.warn(chalk.yellow('OpenAI API not configured, skipping analysis'));
+              console.log(chalk.gray('Set OPENAI_API_KEY or use --ai webai to use Web AI'));
+              return;
+            }
+
+            const analysis = await imageAnalyzer.suggestActions(result.data.path, options.goal);
+
+            analyzeSpinner.succeed(chalk.green('Analysis complete'));
+
+            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
+            console.log(chalk.cyan('\n🔍 Screen Analysis (OpenAI):'));
+            console.log(chalk.white(`\n${analysis.description}`));
+
+            if (analysis.elements && analysis.elements.length > 0) {
+              console.log(chalk.cyan('\n📋 UI Elements:'));
+              analysis.elements.slice(0, 10).forEach((el, i) => {
+                console.log(chalk.white(`  ${i + 1}. ${el}`));
+              });
+            }
+
+            if (analysis.suggestions && analysis.suggestions.length > 0) {
+              console.log(chalk.cyan('\n💡 Suggested Actions:'));
+              analysis.suggestions.forEach((s, i) => {
+                console.log(chalk.white(`  ${i + 1}. ${s}`));
+              });
+            }
+          } catch (error: any) {
+            analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
           }
+        } else if (provider === 'webai') {
+          const analyzeSpinner = ora('Analyzing screenshot with Web AI...').start();
 
-          const analysis = await imageAnalyzer.suggestActions(result.data.path, options.goal);
+          try {
+            const { webAIService } = await import('@/ai/webai');
+            const webAIName = options.webai || 'doubao';
+            const aiConfig = config.getWebAI(webAIName);
 
-          analyzeSpinner.succeed(chalk.green('Analysis complete'));
+            if (!aiConfig) {
+              analyzeSpinner.fail(chalk.red(`Web AI "${webAIName}" not found. Use: openman webai list`));
+              return;
+            }
 
-          console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
-          console.log(chalk.cyan('\n🔍 Screen Analysis:'));
-          console.log(chalk.white(`\n${analysis.description}`));
+            webAIService.addConfig(aiConfig);
 
-          if (analysis.elements && analysis.elements.length > 0) {
-            console.log(chalk.cyan('\n📋 UI Elements:'));
-            analysis.elements.slice(0, 10).forEach((el, i) => {
-              console.log(chalk.white(`  ${i + 1}. ${el}`));
-            });
+            const prompt = options.goal
+              ? `Please analyze this screenshot and suggest actions to achieve: ${options.goal}`
+              : 'Please analyze this screenshot and describe what you see, including all UI elements and actionable items.';
+
+            const analysis = await webAIService.query(webAIName, prompt);
+
+            analyzeSpinner.succeed(chalk.green('Analysis complete'));
+
+            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
+            console.log(chalk.cyan(`\n🔍 Screen Analysis (Web AI - ${webAIName}):`));
+            console.log(chalk.white(`\n${analysis}`));
+
+            await webAIService.close();
+          } catch (error: any) {
+            analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
           }
-
-          if (analysis.suggestions && analysis.suggestions.length > 0) {
-            console.log(chalk.cyan('\n💡 Suggested Actions:'));
-            analysis.suggestions.forEach((s, i) => {
-              console.log(chalk.white(`  ${i + 1}. ${s}`));
-            });
-          }
-        } catch (error: any) {
-          analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
         }
       }
     } catch (error: any) {
