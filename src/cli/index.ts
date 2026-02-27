@@ -161,91 +161,202 @@ program
       const webAI = webAIs[0];
       webAIService.addConfig(webAI);
 
-      const analysisPrompt = `你是一个智能设备测试助手。
+      const analysisPrompt = `你是设备自动化测试助手。分析截图返回操作步骤JSON。
 
-用户任务: ${taskDescription}
+任务: ${taskDescription}
 
-请分析这张设备截图，然后：
-1. 描述当前屏幕显示的内容（当前打开的是什么应用）
-2. 根据用户任务，列出需要执行的具体操作步骤
-3. 每个步骤说明需要点击的位置或输入的内容
+返回格式（只返回JSON）:
+{
+  "current_screen": "界面描述",
+  "steps": [
+    {"action": "tap", "target": "搜索框", "position": "top-center"},
+    {"action": "input", "text": "北京站"},
+    {"action": "tap", "target": "搜索/确认按钮", "position": "keyboard-search"},
+    {"action": "wait", "seconds": 2}
+  ],
+  "expected_result": "预期结果"
+}
 
-请用以下格式回复：
-【当前界面】: 简要描述
-【操作步骤】:
-1. 步骤1（动作类型: 点击/输入/滑动, 目标: 具体位置或元素）
-2. 步骤2
-...
-【预期结果】: 完成后应该看到什么`;
+position可选值:
+- top-left, top-center, top-right (顶部)
+- middle-left, middle-center, middle-right (中部)
+- bottom-left, bottom-center, bottom-right (底部)
+- keyboard-search (键盘搜索键)
+- first-result (第一个搜索结果)
+
+action: tap/input/wait/back(返回键)`;
 
       const analysis = await webAIService.queryWithImage(webAI.name, screenshotPath, analysisPrompt);
       
       spinner.succeed(chalk.green('Analysis complete'));
 
-      // Display results
+      // Parse AI response to extract JSON
+      let taskPlan: any = null;
+      try {
+        // Try to extract JSON from response
+        const jsonMatch = analysis.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          taskPlan = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        // JSON parsing failed, show raw analysis
+      }
+
+      // Display analysis
       console.log(chalk.cyan('\n' + '='.repeat(60)));
       console.log(chalk.cyan('📋 Task Analysis'));
       console.log(chalk.cyan('='.repeat(60)));
       console.log(chalk.white(`\n🎯 Task: ${taskDescription}\n`));
-      console.log(chalk.white(analysis));
+      
+      if (taskPlan) {
+        console.log(chalk.white(`📱 Current Screen: ${taskPlan.current_screen}`));
+        console.log(chalk.white(`\n📝 Steps to execute:`));
+        taskPlan.steps?.forEach((step: any, i: number) => {
+          const desc = step.action === 'input' 
+            ? `${step.action}: "${step.text}"`
+            : `${step.action}: ${step.target} (${step.x}%, ${step.y}%)`;
+          console.log(chalk.white(`   ${i + 1}. ${desc}`));
+        });
+        console.log(chalk.white(`\n✅ Expected: ${taskPlan.expected_result}`));
+      } else {
+        console.log(chalk.white(analysis));
+      }
       console.log(chalk.cyan('\n' + '='.repeat(60)));
 
-      // Interactive conversation loop
-      const readline = await import('readline');
-      
-      console.log(chalk.gray('\n💬 You can now ask follow-up questions or give instructions.'));
-      console.log(chalk.gray('   Commands: "screenshot" - take new screenshot, "exit" - end task\n'));
+      // Auto-execute if we have parsed steps
+      if (taskPlan?.steps?.length > 0) {
+        // Get device screen size for coordinate conversion
+        const screenInfo = await deviceTools.getScreenInfo(targetDevice.id);
+        const screenWidth = screenInfo.data?.width || 1080;
+        const screenHeight = screenInfo.data?.height || 2340;
 
-      while (true) {
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
+        console.log(chalk.cyan('\n🚀 Auto-executing steps...\n'));
 
-        const userInput = await new Promise<string>((resolve) => {
-          rl.question(chalk.cyan('You > '), (answer) => {
-            rl.close();
-            resolve(answer.trim());
-          });
-        });
+        // Position to coordinate mapping
+        const positionToCoords = (pos: string): { x: number; y: number } => {
+          const map: Record<string, { x: number; y: number }> = {
+            'top-left': { x: 15, y: 8 },
+            'top-center': { x: 50, y: 8 },
+            'top-right': { x: 85, y: 8 },
+            'middle-left': { x: 15, y: 50 },
+            'middle-center': { x: 50, y: 50 },
+            'middle-right': { x: 85, y: 50 },
+            'bottom-left': { x: 15, y: 92 },
+            'bottom-center': { x: 50, y: 92 },
+            'bottom-right': { x: 85, y: 92 },
+            'keyboard-search': { x: 91, y: 58 }, // 键盘右下角搜索键
+            'first-result': { x: 50, y: 25 }, // 第一个搜索结果
+          };
+          return map[pos] || { x: 50, y: 50 };
+        };
 
-        if (!userInput) continue;
+        for (let i = 0; i < taskPlan.steps.length; i++) {
+          const step = taskPlan.steps[i];
+          const stepNum = i + 1;
 
-        // Check for special commands
-        if (userInput.toLowerCase() === 'exit' || userInput.toLowerCase() === 'quit' || userInput.toLowerCase() === '退出') {
-          console.log(chalk.gray('\nTask completed.'));
-          break;
-        }
+          spinner.start(`Step ${stepNum}/${taskPlan.steps.length}: ${step.action}...`);
 
-        if (userInput.toLowerCase() === 'screenshot' || userInput.toLowerCase() === '截图') {
-          spinner.start('📸 Taking new screenshot...');
-          const newScreenshot = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
-          spinner.succeed(chalk.green('New screenshot captured'));
-          
-          if (newScreenshot.data?.path) {
-            console.log(chalk.gray(`  Saved: ${newScreenshot.data.path}`));
-            
-            // Upload new screenshot and ask AI to analyze
-            spinner.start('🤖 Analyzing new screenshot...');
-            const newAnalysis = await webAIService.queryWithImage(
-              webAI.name, 
-              newScreenshot.data.path, 
-              '请分析这张新的截图，描述当前界面的状态和变化'
-            );
-            spinner.succeed(chalk.green('Analysis complete'));
-            console.log(chalk.green('\n🤖 AI: ') + newAnalysis + '\n');
+          try {
+            if (step.action === 'tap') {
+              let pctX = 50, pctY = 50;
+              
+              // Use position description if available
+              if (step.position) {
+                const coords = positionToCoords(step.position);
+                pctX = coords.x;
+                pctY = coords.y;
+              } else if (step.x !== undefined && step.y !== undefined) {
+                pctX = Math.max(0, Math.min(100, Number(step.x) || 50));
+                pctY = Math.max(0, Math.min(100, Number(step.y) || 50));
+              }
+              
+              const x = Math.round((pctX / 100) * screenWidth);
+              const y = Math.round((pctY / 100) * screenHeight);
+              await deviceTools.tap(x, y, targetDevice.id);
+              spinner.succeed(chalk.green(`Step ${stepNum}: Tapped (${x},${y}) - ${step.target || step.position}`));
+              
+            } else if (step.action === 'input' && step.text) {
+              // Wait for keyboard to appear
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              await deviceTools.inputText(targetDevice.id, step.text);
+              spinner.succeed(chalk.green(`Step ${stepNum}: Input "${step.text}"`));
+              // Wait for input to be processed
+              await new Promise(resolve => setTimeout(resolve, 800));
+              
+            } else if (step.action === 'wait') {
+              const secs = step.seconds || 2;
+              await new Promise(resolve => setTimeout(resolve, secs * 1000));
+              spinner.succeed(chalk.green(`Step ${stepNum}: Waited ${secs}s`));
+              
+            } else if (step.action === 'back') {
+              await deviceTools.pressKey('back', targetDevice.id);
+              spinner.succeed(chalk.green(`Step ${stepNum}: Back`));
+              
+            } else if (step.action === 'swipe') {
+              const startX = Math.round((step.startX / 100) * screenWidth);
+              const startY = Math.round((step.startY / 100) * screenHeight);
+              const endX = Math.round((step.endX / 100) * screenWidth);
+              const endY = Math.round((step.endY / 100) * screenHeight);
+              await deviceTools.swipe(targetDevice.id, startX, startY, endX, endY);
+              spinner.succeed(chalk.green(`Step ${stepNum}: Swiped`));
+            }
+
+            // Wait between steps
+            await new Promise(resolve => setTimeout(resolve, 1500));
+
+          } catch (err: any) {
+            spinner.fail(chalk.red(`Step ${stepNum} failed: ${err.message}`));
           }
-          continue;
         }
 
-        // Send follow-up question to AI
-        spinner.start('🤖 Thinking...');
-        try {
-          const response = await webAIService.followUp(userInput);
-          spinner.succeed(chalk.green('Response received'));
-          console.log(chalk.green('\n🤖 AI: ') + response + '\n');
-        } catch (error: any) {
-          spinner.fail(chalk.red('Error: ' + error.message));
+        // Take verification screenshot
+        console.log('');
+        spinner.start('📸 Taking verification screenshot...');
+        const verifyScreenshot = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
+        spinner.succeed(chalk.green('Verification screenshot captured'));
+
+        // Analyze result
+        if (verifyScreenshot.data?.path) {
+          spinner.start('🤖 Verifying result...');
+          const verifyPrompt = `任务: ${taskDescription}
+预期结果: ${taskPlan.expected_result}
+
+请分析这张执行后的截图，判断任务是否成功完成，简要说明当前界面状态。`;
+          
+          const verification = await webAIService.queryWithImage(webAI.name, verifyScreenshot.data.path, verifyPrompt);
+          spinner.succeed(chalk.green('Verification complete'));
+          
+          console.log(chalk.cyan('\n' + '='.repeat(60)));
+          console.log(chalk.cyan('📊 Task Result'));
+          console.log(chalk.cyan('='.repeat(60)));
+          console.log(chalk.white('\n' + verification));
+          console.log(chalk.cyan('\n' + '='.repeat(60)));
+        }
+      } else {
+        // No parsed steps, enter interactive mode
+        const readline = await import('readline');
+        console.log(chalk.yellow('\n⚠️ Could not parse executable steps.'));
+        console.log(chalk.gray('💬 Enter follow-up instructions or "exit" to quit.\n'));
+
+        while (true) {
+          const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+          const userInput = await new Promise<string>((resolve) => {
+            rl.question(chalk.cyan('You > '), (answer) => { rl.close(); resolve(answer.trim()); });
+          });
+
+          if (!userInput || userInput.toLowerCase() === 'exit') {
+            console.log(chalk.gray('\nTask ended.'));
+            break;
+          }
+
+          spinner.start('🤖 Processing...');
+          try {
+            const response = await webAIService.followUp(userInput);
+            spinner.succeed(chalk.green('Response received'));
+            console.log(chalk.green('\n🤖 AI: ') + response + '\n');
+          } catch (error: any) {
+            spinner.fail(chalk.red('Error: ' + error.message));
+          }
         }
       }
 

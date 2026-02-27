@@ -260,7 +260,7 @@ export class DeviceTools {
   }
 
   /**
-   * Send text to device
+   * Send text to device (supports Chinese via broadcast)
    */
   public async sendText(text: string, deviceId?: string): Promise<ToolResult> {
     const devices = await this.listDevices();
@@ -277,11 +277,37 @@ export class DeviceTools {
     }
 
     try {
-      // Escape special characters for shell
-      const escapedText = text.replace(/\s/g, '%s').replace(/'/g, "\\'");
-      await execAsync(
-        `${this.adbPath} -s ${device.id} shell input text '${escapedText}'`
-      );
+      // Check if text contains non-ASCII (Chinese, etc.)
+      const hasNonAscii = /[^\x00-\x7F]/.test(text);
+      
+      if (hasNonAscii) {
+        // Use ADB broadcast for Chinese text (requires ADBKeyboard app)
+        // Fallback: use base64 encoding with am broadcast
+        const base64Text = Buffer.from(text).toString('base64');
+        try {
+          // Try ADBKeyboard first
+          await execAsync(
+            `${this.adbPath} -s ${device.id} shell am broadcast -a ADB_INPUT_B64 --es msg '${base64Text}'`
+          );
+        } catch {
+          // Fallback: input each character via clipboard
+          // This requires the device to support clipboard
+          await execAsync(
+            `${this.adbPath} -s ${device.id} shell "echo '${text}' | am broadcast -a clipper.set"`
+          );
+          // Paste from clipboard (Ctrl+V)
+          await execAsync(
+            `${this.adbPath} -s ${device.id} shell input keyevent 279`
+          ); // KEYCODE_PASTE
+        }
+      } else {
+        // ASCII text - use standard input text
+        const escapedText = text.replace(/\s/g, '%s').replace(/'/g, "\\'");
+        await execAsync(
+          `${this.adbPath} -s ${device.id} shell input text '${escapedText}'`
+        );
+      }
+      
       return {
         success: true,
         data: { action: 'input', text, device: device.model },
@@ -336,6 +362,50 @@ export class DeviceTools {
       return {
         success: false,
         error: `Key press failed: ${(error as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Input text (wrapper for sendText with deviceId first)
+   */
+  public async inputText(deviceId: string, text: string): Promise<ToolResult> {
+    return this.sendText(text, deviceId);
+  }
+
+  /**
+   * Swipe on device screen
+   */
+  public async swipe(
+    deviceId: string,
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    duration: number = 300
+  ): Promise<ToolResult> {
+    const devices = await this.listDevices();
+    if (devices.length === 0) {
+      return { success: false, error: 'No devices connected' };
+    }
+
+    const device = devices.find(d => d.id === deviceId) || devices[0];
+    if (!device) {
+      return { success: false, error: `Device ${deviceId} not found` };
+    }
+
+    try {
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell input swipe ${startX} ${startY} ${endX} ${endY} ${duration}`
+      );
+      return {
+        success: true,
+        data: { action: 'swipe', from: { x: startX, y: startY }, to: { x: endX, y: endY }, device: device.model },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Swipe failed: ${(error as Error).message}`,
       };
     }
   }

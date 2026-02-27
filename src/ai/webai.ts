@@ -67,28 +67,68 @@ export class WebAIService {
    * Ensure browser is initialized with Chrome session
    */
   private async ensureInitialized(): Promise<void> {
-    if (!this.initialized || !this.browserEngine) {
-      // Check if CHROME_DEBUG_PORT is set to connect to existing Chrome
-      const debugPort = process.env.CHROME_DEBUG_PORT 
-        ? parseInt(process.env.CHROME_DEBUG_PORT, 10) 
-        : undefined;
-
-      if (debugPort) {
-        // Connect to existing Chrome with remote debugging
-        this.browserEngine = new BrowserEngine({
-          headless: false,
-          debuggingPort: debugPort,
-        });
-      } else {
-        // Launch new browser with persistent data
-        this.browserEngine = new BrowserEngine({
-          headless: false,
-          userDataDir: process.env.BROWSER_DATA_DIR || '~/.openman/browser',
-        });
-      }
-      await this.browserEngine.initialize();
-      this.initialized = true;
+    if (this.initialized && this.browserEngine) {
+      return; // Already initialized
     }
+
+    // Try to initialize with retry logic
+    const maxRetries = 2;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // Clean up any existing instance first
+        if (this.browserEngine) {
+          try {
+            await this.browserEngine.close();
+          } catch {
+            // Ignore close errors
+          }
+          this.browserEngine = null;
+          this.initialized = false;
+        }
+
+        // Check if CHROME_DEBUG_PORT is set
+        const debugPort = process.env.CHROME_DEBUG_PORT 
+          ? parseInt(process.env.CHROME_DEBUG_PORT, 10) 
+          : undefined;
+
+        if (debugPort) {
+          this.browserEngine = new BrowserEngine({
+            headless: false,
+            debuggingPort: debugPort,
+          });
+        } else {
+          this.browserEngine = new BrowserEngine({
+            headless: false,
+            userDataDir: process.env.BROWSER_DATA_DIR || '~/.openman/browser',
+          });
+        }
+
+        await this.browserEngine.initialize();
+        this.initialized = true;
+        return; // Success
+
+      } catch (error) {
+        lastError = error as Error;
+        console.log(`  ⚠️ Browser init attempt ${attempt + 1} failed, retrying...`);
+        
+        // Kill any stuck browser processes before retry
+        if (attempt < maxRetries) {
+          try {
+            const { exec } = await import('child_process');
+            const { promisify } = await import('util');
+            const execAsync = promisify(exec);
+            await execAsync('pkill -f "chromium|chrome" 2>/dev/null || true');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+      }
+    }
+
+    throw lastError || new Error('Failed to initialize browser after retries');
   }
 
   /**
