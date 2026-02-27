@@ -4,6 +4,7 @@
 
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import type { OpenManConfig, AIProvider, WebAIConfig } from '@/types';
@@ -17,11 +18,12 @@ export class ConfigManager {
   private config: OpenManConfig;
   private persistedConfig: Partial<OpenManConfig> = {};
   private webAIs: WebAIConfig[] = [];
+  private initialized = false;
 
   constructor() {
     this.config = this.loadConfig();
     this.loadPersistedConfig();
-    this.loadWebAIs();
+    this.loadWebAIsSync();
   }
 
   private loadConfig(): OpenManConfig {
@@ -294,6 +296,24 @@ export class ConfigManager {
   // ============================================================================
   // Web AI Configuration Management
   // ============================================================================
+
+  /**
+   * Load Web AI configurations from file (synchronous version for constructor)
+   */
+  private loadWebAIsSync(): void {
+    try {
+      if (fsSync.existsSync(WEBAI_FILE)) {
+        const content = fsSync.readFileSync(WEBAI_FILE, 'utf-8');
+        this.webAIs = JSON.parse(content);
+        
+        // Also merge into config
+        this.config.ai.webAI = this.webAIs;
+      }
+    } catch (error) {
+      // File doesn't exist or is invalid
+      this.webAIs = [];
+    }
+  }
 
   /**
    * Load Web AI configurations from file

@@ -1,8 +1,7 @@
+#!/usr/bin/env node
 /**
  * OpenMan CLI Interface
  */
-
-#!/usr/bin/env node
 
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -188,8 +187,10 @@ program
 // Memory Commands
 // ============================================================================
 
-program
-  .command('memory add <content>')
+const memoryCmd = program.command('memory').description('Memory management commands');
+
+memoryCmd
+  .command('add <content>')
   .description('Add a memory')
   .option('-t, --type <type>', 'memory type (episodic, semantic, preference)', 'episodic')
   .option('-i, --importance <number>', 'importance score (0-1)')
@@ -219,8 +220,8 @@ program
     }
   });
 
-program
-  .command('memory list')
+memoryCmd
+  .command('list')
   .description('List memories')
   .option('-t, --type <type>', 'filter by type')
   .option('-l, --limit <number>', 'limit results', '10')
@@ -258,8 +259,8 @@ program
     }
   });
 
-program
-  .command('memory search <query>')
+memoryCmd
+  .command('search <query>')
   .description('Search memories')
   .option('-l, --limit <number>', 'limit results', '10')
   .action(async (query, options) => {
@@ -281,8 +282,8 @@ program
     }
   });
 
-program
-  .command('memory stats')
+memoryCmd
+  .command('stats')
   .description('Show memory statistics')
   .action(() => {
     const stats = memorySystem.getStatistics();
@@ -299,8 +300,8 @@ program
     });
   });
 
-program
-  .command('memory export [file]')
+memoryCmd
+  .command('export [file]')
   .description('Export memories')
   .action(async (file) => {
     const spinner = ora('Exporting memories...').start();
@@ -318,8 +319,10 @@ program
 // Session Commands
 // ============================================================================
 
-program
-  .command('session create <name>')
+const sessionCmd = program.command('session').description('Session management commands');
+
+sessionCmd
+  .command('create <name>')
   .description('Create a new session')
   .option('-p, --provider <provider>', 'AI provider', 'openai')
   .option('-m, --model <model>', 'AI model', 'gpt-4')
@@ -340,8 +343,8 @@ program
     }
   });
 
-program
-  .command('session list')
+sessionCmd
+  .command('list')
   .description('List all sessions')
   .action(async () => {
     const sessions = sessionManager.listSessions();
@@ -362,8 +365,8 @@ program
     console.log(chalk.white(`  Total Messages: ${stats.totalMessages}`));
   });
 
-program
-  .command('session switch <id>')
+sessionCmd
+  .command('switch <id>')
   .description('Switch to a session')
   .action(async (id) => {
     const success = sessionManager.setCurrentSession(id);
@@ -377,8 +380,8 @@ program
     }
   });
 
-program
-  .command('session delete <id>')
+sessionCmd
+  .command('delete <id>')
   .description('Delete a session')
   .action(async (id) => {
     const spinner = ora('Deleting session...').start();
@@ -398,8 +401,8 @@ program
     }
   });
 
-program
-  .command('session export <id> [file]')
+sessionCmd
+  .command('export <id> [file]')
   .description('Export a session')
   .option('-f, --format <format>', 'export format (json, txt)', 'json')
   .action(async (id, file, options) => {
@@ -512,8 +515,14 @@ program
     console.log(chalk.white('  npm run dev chat "Hello, OpenMan!"'));
   });
 
-program
-  .command('config save')
+// ============================================================================
+// Config Commands
+// ============================================================================
+
+const configCmd = program.command('config').description('Configuration management commands');
+
+configCmd
+  .command('save')
   .description('Save configuration to file')
   .action(async () => {
     const spinner = ora('Saving configuration...').start();
@@ -527,8 +536,8 @@ program
     }
   });
 
-program
-  .command('config validate')
+configCmd
+  .command('validate')
   .description('Validate configuration')
   .action(() => {
     const validation = config.validate();
@@ -544,8 +553,8 @@ program
     }
   });
 
-program
-  .command('config export [file]')
+configCmd
+  .command('export [file]')
   .description('Export configuration')
   .option('-s, --show-secrets', 'include API keys')
   .action(async (file, options) => {
@@ -564,8 +573,9 @@ program
 // Permission Commands
 // ============================================================================
 
-program
-  .command('permissions')
+const permCmd = program.command('permissions').description('Permission management commands');
+
+permCmd
   .description('Show current permissions')
   .action(() => {
     const perms = permissionManager.getAllPermissions();
@@ -581,8 +591,8 @@ program
     });
   });
 
-program
-  .command('permissions set <category> <action> <permission>')
+permCmd
+  .command('set <category> <action> <permission>')
   .description('Set a permission')
   .action((category, action, permission) => {
     const validCategories = ['web', 'local', 'ai'];
@@ -609,8 +619,8 @@ program
     console.log(chalk.green(`\n✓ Set ${category}.${action} to ${permission}`));
   });
 
-program
-  .command('permissions show <category> <action>')
+permCmd
+  .command('show <category> <action>')
   .description('Show permission description')
   .action((category, action) => {
     const description = permissionManager.getPermissionDescription(category, action);
@@ -646,7 +656,7 @@ program
     displayLogs.forEach((log: any) => {
       const status = log.result === 'success' ? '✓' : '✗';
       const color = log.result === 'success' ? 'green' : 'red';
-      console.log(chalk[color(`\n  ${status} ${formatDate(new Date(log.timestamp))}`));
+      console.log(chalk[color](`\n  ${status} ${formatDate(new Date(log.timestamp))}`));
       console.log(chalk.white(`     ${log.action}`));
       if (log.details) {
         console.log(chalk.gray(`     ${JSON.stringify(log.details, null, 2).substring(0, 100)}...`));
@@ -654,68 +664,14 @@ program
     });
   });
 
-program
-  .command('init')
-  .description('Initialize OpenMan configuration')
-  .action(async () => {
-    console.log(chalk.cyan('\n🚀 Initializing OpenMan...\n'));
-
-    const readline = await import('readline');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    // Get OpenAI API key
-    const openaiKey = await question(
-      rl,
-      chalk.cyan('Enter your OpenAI API key (or press Enter to skip): ')
-    );
-
-    // Get Anthropic API key
-    const anthropicKey = await question(
-      rl,
-      chalk.cyan('Enter your Anthropic API key (or press Enter to skip): ')
-    );
-
-    // Get Google API key
-    const googleKey = await question(
-      rl,
-      chalk.cyan('Enter your Google API key (or press Enter to skip): ')
-    );
-
-    rl.close();
-
-    // Update environment variables
-    if (openaiKey) process.env.OPENAI_API_KEY = openaiKey;
-    if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
-    if (googleKey) process.env.GOOGLE_API_KEY = googleKey;
-
-    // Validate configuration
-    const validation = config.validate();
-    if (!validation.valid) {
-      console.log(chalk.red('\n✗ Configuration errors:'));
-      validation.errors.forEach(error => {
-        console.log(chalk.red(`  - ${error}`));
-      });
-      process.exit(1);
-    }
-
-    // Save configuration
-    await config.save();
-
-    console.log(chalk.green('\n✓ OpenMan initialized successfully!'));
-    console.log(chalk.white('\nNext steps:'));
-    console.log(chalk.white('  npm run build'));
-    console.log(chalk.white('  npm run dev chat "Hello, OpenMan!"'));
-  });
-
 // ============================================================================
 // Web AI Commands
 // ============================================================================
 
-program
-  .command('webai add <name> <url>')
+const webaiCmd = program.command('webai').description('Web AI service commands');
+
+webaiCmd
+  .command('add <name> <url>')
   .description('Add a Web AI service')
   .option('-i, --input <selector>', 'CSS selector for input field')
   .option('-s, --submit <selector>', 'CSS selector for submit button')
@@ -742,8 +698,8 @@ program
     }
   });
 
-program
-  .command('webai list')
+webaiCmd
+  .command('list')
   .description('List all Web AI services')
   .action(() => {
     const webais = config.listWebAIs();
@@ -769,8 +725,8 @@ program
     console.log(chalk.cyan(`\n📊 Total: ${webais.length} Web AI service(s)`));
   });
 
-program
-  .command('webai remove <name>')
+webaiCmd
+  .command('remove <name>')
   .description('Remove a Web AI service')
   .action(async (name) => {
     const spinner = ora(`Removing Web AI "${name}"...`).start();
@@ -784,8 +740,8 @@ program
     }
   });
 
-program
-  .command('webai show <name>')
+webaiCmd
+  .command('show <name>')
   .description('Show Web AI details')
   .action((name) => {
     const ai = config.getWebAI(name);
@@ -811,8 +767,8 @@ program
     }
   });
 
-program
-  .command('webai chat <name> <message>')
+webaiCmd
+  .command('chat <name> <message>')
   .description('Chat with a Web AI service')
   .action(async (name, message) => {
     const spinner = ora(`Chatting with ${name}...`).start();
