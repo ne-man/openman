@@ -565,17 +565,15 @@ export class WebAIService {
     // Check for verification dialogs - pass configName for fallback
     await this.handleVerificationDialog(page, configName);
 
-    let uploaded = false;
     const fs = await import('fs/promises');
     const pathModule = await import('path');
 
-    // 拖拽上传图片（元宝支持）
+    // 直接拖拽上传图片
     try {
       const imageBuffer = await fs.readFile(imagePath);
       const fileName = pathModule.basename(imagePath);
       const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
       
-      // 执行拖拽上传
       await page.evaluate(async (base64Data: string, fileName: string, mimeType: string) => {
         const byteString = atob(base64Data);
         const ab = new ArrayBuffer(byteString.length);
@@ -588,44 +586,19 @@ export class WebAIService {
         const dataTransfer = new DataTransfer();
         dataTransfer.items.add(file);
         
-        const target = document.querySelector('textarea') || document.body;
+        // 找到输入区域并拖入
+        const target = document.querySelector('[contenteditable="true"]') || 
+                       document.querySelector('textarea') || 
+                       document.body;
         target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer }));
         target.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer }));
         target.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
       }, imageBuffer.toString('base64'), fileName, mimeType);
       
-      uploaded = true;
-      console.log('  📷 图片已上传');
-      
-      // 等待图片处理
+      console.log('  📷 图片已拖入');
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
-    } catch (dragError) {
-      console.log('  ⚠️ 拖拽上传失败:', (dragError as Error).message?.slice(0, 30));
-    }
-
-    // 如果拖拽失败，尝试直接 file input
-    // 等待图片上传完成
-    if (uploaded) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    // 如果拖拽失败，尝试 file input
-    if (!uploaded) {
-      const fileInputs = await page.$$('input[type="file"]');
-      for (const input of fileInputs) {
-        try {
-          await input.uploadFile(imagePath);
-          uploaded = true;
-          console.log('  📷 图片已通过file input上传');
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          break;
-        } catch { continue; }
-      }
-    }
-
-    if (!uploaded) {
-      console.log('  ⚠️ 未找到图片上传入口，将只发送文本');
+    } catch (e) {
+      console.log('  ⚠️ 拖入图片失败');
     }
 
     // Find and click input element
@@ -685,10 +658,39 @@ export class WebAIService {
     // Wait for AI to finish responding
     await this.waitForResponseComplete(page, responseSelector);
 
-    // Get response
-    const responseText = await page.$$eval(responseSelector, (els) => {
-      const lastEl = els[els.length - 1];
-      return lastEl ? lastEl.textContent || '' : '';
+    // Get response - try multiple selectors
+    const responseText = await page.evaluate(() => {
+      const selectors = [
+        '[class*="markdown"]',
+        '[class*="message-content"]', 
+        '[class*="reply-content"]',
+        '[class*="answer"]',
+        '[class*="agent-response"]',
+        '[class*="assistant"]'
+      ];
+      
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          // 获取最后一个元素的文本
+          const lastEl = els[els.length - 1];
+          const text = lastEl?.textContent?.trim() || '';
+          if (text.length > 20) {
+            return text;
+          }
+        }
+      }
+      
+      // 备用：获取页面上最长的文本块
+      const allTexts = document.querySelectorAll('div, p, span');
+      let longestText = '';
+      for (const el of allTexts) {
+        const text = el.textContent?.trim() || '';
+        if (text.length > longestText.length && text.length < 10000) {
+          longestText = text;
+        }
+      }
+      return longestText;
     });
     
     console.log(`  📝 响应长度: ${responseText.length} 字符`);
@@ -704,24 +706,66 @@ export class WebAIService {
    * Wait for AI response to complete (not still generating)
    */
   private async waitForResponseComplete(page: import('puppeteer').Page, responseSelector: string): Promise<void> {
-    // Wait initial time for response to start
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('  ⏳ 等待AI回复完成...');
+    
+    // 等待初始响应开始
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Check if still generating by watching for content changes
+    // 检测是否还在生成（通过内容变化判断）
     let lastContent = '';
     let stableCount = 0;
-    const maxWait = 60; // 60 seconds max
+    const maxWait = 120; // 最多等待120秒
 
     for (let i = 0; i < maxWait; i++) {
-      const currentContent = await page.$$eval(responseSelector, (els) => {
-        const lastEl = els[els.length - 1];
-        return lastEl ? lastEl.textContent || '' : '';
+      // 检查是否有"正在输入"指示器
+      const isTyping = await page.evaluate(() => {
+        const indicators = document.querySelectorAll('[class*="typing"], [class*="loading"], [class*="generating"], [class*="thinking"]');
+        for (const ind of indicators) {
+          const style = window.getComputedStyle(ind);
+          if (style.display !== 'none' && style.visibility !== 'hidden') {
+            return true;
+          }
+        }
+        return false;
       });
 
-      if (currentContent === lastContent && currentContent.length > 0) {
+      // 获取当前响应内容
+      const currentContent = await page.evaluate(() => {
+        // 尝试多种选择器获取最新的AI回复
+        const selectors = [
+          '[class*="markdown"]',
+          '[class*="message-content"]',
+          '[class*="reply-content"]',
+          '[class*="answer"]',
+          '[class*="response"]'
+        ];
+        for (const sel of selectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) {
+            const lastEl = els[els.length - 1];
+            const text = lastEl?.textContent?.trim() || '';
+            if (text.length > 10) {
+              return text;
+            }
+          }
+        }
+        return '';
+      });
+
+      // 如果正在输入，重置稳定计数
+      if (isTyping) {
+        stableCount = 0;
+        lastContent = currentContent;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+
+      // 检查内容是否稳定
+      if (currentContent === lastContent && currentContent.length > 10) {
         stableCount++;
-        if (stableCount >= 3) {
-          // Content stable for 3 seconds, consider complete
+        if (stableCount >= 5) {
+          // 内容稳定5秒，认为完成
+          console.log(`  ✅ AI回复完成 (${currentContent.length}字符)`);
           break;
         }
       } else {
