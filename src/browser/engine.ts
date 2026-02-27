@@ -2,7 +2,7 @@
  * Browser engine for OpenMan
  */
 
-import puppeteer, { Browser, Page, LaunchOptions } from 'puppeteer';
+import puppeteer, { Browser, Page, PuppeteerLaunchOptions } from 'puppeteer';
 import type { BrowserConfig, NavigationOptions, PageSnapshot, FormField } from '@/types';
 import { config } from '@/core/config';
 import { auditLogger } from '@/core/audit';
@@ -20,8 +20,9 @@ export class BrowserEngine {
       return;
     }
 
-    const launchOptions: LaunchOptions = {
-      headless: this.options?.headless ?? true,
+    const headlessMode = this.options?.headless ?? true;
+    const launchOptions: PuppeteerLaunchOptions = {
+      headless: headlessMode,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -41,7 +42,7 @@ export class BrowserEngine {
     await auditLogger.log({
       timestamp: new Date(),
       action: 'browser.initialize',
-      details: { headless: launchOptions.headless },
+      details: { headless: headlessMode },
       result: 'success',
       riskLevel: 'low',
     });

@@ -224,7 +224,7 @@ export class StreamingAI extends EventEmitter {
           const streamChunk: StreamChunk = {
             type: 'delta',
             delta: { content: token },
-            model: event.model,
+            model: (event as any).model || 'claude-3',
             provider: 'anthropic',
           };
 
@@ -235,7 +235,7 @@ export class StreamingAI extends EventEmitter {
           }
         }
       } else if (event.type === 'message_stop') {
-        const usage = event.usage;
+        const usage = (event as any).usage || { input_tokens: 0, output_tokens: 0 };
         const response: AIResponse = {
           content: fullContent,
           usage: {
@@ -243,7 +243,7 @@ export class StreamingAI extends EventEmitter {
             completionTokens: usage.output_tokens,
             totalTokens: usage.input_tokens + usage.output_tokens,
           },
-          model: event.model,
+          model: (event as any).model || 'claude-3',
           provider: 'anthropic',
         };
 

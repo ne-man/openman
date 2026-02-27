@@ -121,15 +121,16 @@ export class WebServer {
         res.setHeader('Connection', 'keep-alive');
 
         const streamOptions = {
-          onToken: (token) => {
+          onToken: (token: string) => {
             res.write(`data: ${JSON.stringify({ type: 'token', token })}\n\n`);
-            res.flush();
+            // flush if available (requires compression middleware)
+            if ((res as any).flush) (res as any).flush();
           },
-          onComplete: (response) => {
+          onComplete: (response: any) => {
             res.write(`data: ${JSON.stringify({ type: 'complete', response })}\n\n`);
             res.end();
           },
-          onError: (error) => {
+          onError: (error: Error) => {
             res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
             res.end();
           },
@@ -196,19 +197,19 @@ export class WebServer {
 
         // Stream response to client
         const streamOptions = {
-          onToken: (token) => {
+          onToken: (token: string) => {
             this.gateway.send(client.id, {
               type: 'chat.token',
               payload: { token },
             });
           },
-          onComplete: (response) => {
+          onComplete: (response: any) => {
             this.gateway.send(client.id, {
               type: 'chat.complete',
               payload: { response },
             });
           },
-          onError: (error) => {
+          onError: (error: Error) => {
             this.gateway.sendError(client.id, error.message);
           },
         };
@@ -222,8 +223,8 @@ export class WebServer {
     // Handle session commands from WebSocket
     this.gateway.onMessage('session.create', async (message, client) => {
       try {
-        const { name, provider, model } = message.payload;
-        const session = await sessionManager.createSession(name, provider, model);
+        const payload = message.payload as { name: string; provider: AIProvider; model: string };
+        const session = await sessionManager.createSession(payload.name, payload.provider, payload.model);
         this.gateway.send(client.id, {
           type: 'session.created',
           payload: { session },
@@ -236,10 +237,10 @@ export class WebServer {
     // Handle memory commands from WebSocket
     this.gateway.onMessage('memory.add', async (message, client) => {
       try {
-        const { content, type, importance, tags } = message.payload;
-        const memory = await memorySystem.addMemory(content, type, {
-          importance,
-          tags,
+        const payload = message.payload as { content: string; type: 'episodic' | 'semantic' | 'preference'; importance?: number; tags?: string[] };
+        const memory = await memorySystem.addMemory(payload.content, payload.type, {
+          importance: payload.importance,
+          tags: payload.tags,
         });
         this.gateway.send(client.id, {
           type: 'memory.added',
@@ -263,7 +264,7 @@ export class WebServer {
         console.log(`WebSocket Gateway listening on port ${this.port + 1}`);
 
         // Start WebSocket gateway
-        this.gateway.attach(this.server).then(() => {
+        this.gateway.attach(this.server!).then(() => {
           resolve();
         }).catch(reject);
       });

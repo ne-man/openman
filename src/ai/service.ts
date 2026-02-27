@@ -8,7 +8,6 @@ import type {
   AIMessage,
   AIResponse,
   AIProvider,
-  AIServiceConfig,
 } from '@/types';
 import { config } from '@/core/config';
 import { auditLogger } from '@/core/audit';
@@ -150,7 +149,7 @@ export class AIService {
   }
 
   private async googleCompletion(
-    messages: AIMessage[]
+    _messages: AIMessage[]
   ): Promise<AIResponse> {
     // TODO: Implement Google AI integration
     throw new Error('Google AI integration not yet implemented');
@@ -176,9 +175,12 @@ export class AIService {
       response_format: 'b64_json',
     });
 
+    if (!response.data || response.data.length === 0) {
+      throw new Error('Invalid image response');
+    }
     const data = response.data[0];
     if (!data?.b64_json) {
-      throw new Error('Invalid image response');
+      throw new Error('Invalid image response: no b64_json data');
     }
 
     return Buffer.from(data.b64_json, 'base64');
@@ -193,7 +195,9 @@ export class AIService {
       case 'google':
         return false; // Not yet implemented
       case 'custom':
-        return false; // Not yet implemented
+      case 'webai':
+      default:
+        return false;
     }
   }
 }

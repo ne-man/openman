@@ -117,7 +117,7 @@ export class WebSocketGateway extends EventEmitter {
   /**
    * Handle new client connection
    */
-  private handleConnection(ws: WebSocket, req: any): void {
+  private async handleConnection(ws: WebSocket, req: any): Promise<void> {
     const clientId = generateId('client-');
     const clientType = req.headers['x-client-type'] as string || 'web';
     const clientMetadata = this.parseClientMetadata(req);
@@ -416,7 +416,7 @@ export class WebSocketGateway extends EventEmitter {
    * Is server running?
    */
   public isRunning(): boolean {
-    return this.server !== null && this.server.readyState === WebSocketServer.OPEN;
+    return this.server !== null;
   }
 }
 

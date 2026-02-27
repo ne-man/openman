@@ -155,7 +155,7 @@ export class WebAIService {
       throw new Error('Response element not found');
     }
 
-    const responseText = await responseElement.evaluate((el) => el.textContent || '');
+    const responseText = await responseElement.evaluate((el: Element) => el.textContent || '');
 
     return {
       content: responseText.trim(),

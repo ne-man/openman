@@ -204,7 +204,7 @@ export function deepMerge<T extends object>(target: T, source: Partial<T>): T {
 }
 
 function isObject(item: unknown): item is object {
-  return item && typeof item === 'object' && !Array.isArray(item);
+  return Boolean(item && typeof item === 'object' && !Array.isArray(item));
 }
 
 /**
@@ -274,7 +274,7 @@ export class RateLimiter {
 
   public async run<T>(fn: () => Promise<T>): Promise<T> {
     if (this.activeCount >= this.maxConcurrent) {
-      await new Promise((resolve) => this.queue.push(resolve));
+      await new Promise<void>((resolve) => this.queue.push(resolve));
     }
 
     this.activeCount++;

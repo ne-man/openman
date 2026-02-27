@@ -255,7 +255,8 @@ export class SessionManager {
       output += `Messages:\n\n`;
 
       for (const message of session.messages) {
-        output += `[${message.role}] ${message.timestamp.toISOString()}\n`;
+        const timestamp = message.timestamp ? message.timestamp.toISOString() : 'N/A';
+        output += `[${message.role}] ${timestamp}\n`;
         output += `${message.content}\n\n`;
       }
 

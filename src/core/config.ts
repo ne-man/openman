@@ -7,7 +7,7 @@ import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
 import { homedir } from 'os';
-import type { OpenManConfig, AIProvider, WebAIConfig } from '@/types';
+import type { OpenManConfig, AIProvider, WebAIConfig, AIServiceConfig } from '@/types';
 
 dotenv.config();
 
@@ -164,9 +164,17 @@ export class ConfigManager {
   /**
    * Get AI provider config
    */
-  public getAIProvider(provider: AIProvider) {
-    const providerKey = provider as keyof typeof this.config.ai;
-    return this.config.ai[providerKey];
+  public getAIProvider(provider: AIProvider): AIServiceConfig | undefined {
+    switch (provider) {
+      case 'openai':
+        return this.config.ai.openai;
+      case 'anthropic':
+        return this.config.ai.anthropic;
+      case 'google':
+        return this.config.ai.google;
+      default:
+        return undefined;
+    }
   }
 
   /**

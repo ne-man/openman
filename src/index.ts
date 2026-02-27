@@ -36,5 +36,7 @@ export {
 // Re-export types
 export * from '@/types';
 
-// Re-export from config
-export type { Session, MemoryQuery, StreamChunk, StreamOptions } from '@/types';
+// Re-export types from other modules
+export type { Session } from '@/core/session';
+export type { MemoryQuery } from '@/core/memory';
+export type { StreamChunk, StreamOptions } from '@/ai/streaming';

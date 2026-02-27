@@ -15,7 +15,8 @@ import { config } from '@/core/config';
 import { auditLogger } from '@/core/audit';
 import { memorySystem } from '@/core/memory';
 import { sessionManager } from '@/core/session';
-import type { Session, MemoryQuery } from '@/types';
+import type { Session } from '@/core/session';
+import type { MemoryQuery } from '@/core/memory';
 
 const program = new Command();
 
