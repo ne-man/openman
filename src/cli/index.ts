@@ -276,12 +276,12 @@ action: tap/input/wait/back(返回键)`;
               spinner.succeed(chalk.green(`Step ${stepNum}: Tapped (${x},${y}) - ${step.target || step.position}`));
               
             } else if (step.action === 'input' && step.text) {
-              // Wait for keyboard to appear
-              await new Promise(resolve => setTimeout(resolve, 1000));
+              // Wait longer for keyboard and input field to be ready
+              await new Promise(resolve => setTimeout(resolve, 2000));
               await deviceTools.inputText(targetDevice.id, step.text);
               spinner.succeed(chalk.green(`Step ${stepNum}: Input "${step.text}"`));
-              // Wait for input to be processed
-              await new Promise(resolve => setTimeout(resolve, 800));
+              // Wait for input to be fully processed
+              await new Promise(resolve => setTimeout(resolve, 1500));
               
             } else if (step.action === 'wait') {
               const secs = step.seconds || 2;
