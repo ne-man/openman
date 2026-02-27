@@ -31,17 +31,36 @@ program
 
 program
   .command('chat [message...]')
-  .description('Chat with OpenMan')
+  .description('Chat with OpenMan (auto-fallback to Web AI if no API configured)')
   .option('-v, --verbose', 'verbose output')
-  .option('-p, --provider <provider>', 'AI provider to use', 'openai')
+  .option('-p, --provider <provider>', 'AI provider to use (openai, anthropic, webai, auto)')
+  .option('-w, --webai <name>', 'use specific Web AI by name')
   .action(async (message, options) => {
     const spinner = ora('Initializing OpenMan...').start();
 
     try {
-      const input = message ? message.join(' ') : await getUserInput();
-      spinner.stop();
+      // Show provider status
+      const bestProvider = aiService.getBestProvider();
+      const hasAPI = aiService.hasAPIProvider();
 
-      console.log(chalk.cyan('\n🤖 OpenMan: ' + input + '\n'));
+      if (options.verbose) {
+        spinner.info(chalk.gray(`API configured: ${hasAPI ? 'Yes' : 'No'}`));
+        spinner.info(chalk.gray(`Best provider: ${bestProvider}`));
+      }
+
+      // Determine provider
+      let provider = options.provider;
+      if (!provider || provider === 'auto') {
+        provider = bestProvider;
+        if (!hasAPI) {
+          spinner.info(chalk.yellow('No API key configured, using Web AI (browser-based)'));
+        }
+      }
+
+      const input = message ? message.join(' ') : await getUserInput();
+      spinner.text = `Sending to ${provider}...`;
+
+      console.log(chalk.cyan('\n🤖 You: ' + input + '\n'));
 
       const response = await aiService.completion([
         {
@@ -52,13 +71,63 @@ program
           role: 'user',
           content: input,
         },
-      ], options.provider as any);
+      ], provider as any);
 
-      console.log(chalk.green(response.content));
-      console.log(chalk.gray(`\n[Used ${response.usage?.totalTokens || 0} tokens via ${response.provider}]`));
+      spinner.stop();
+      console.log(chalk.green('💬 OpenMan: ' + response.content));
+      
+      const tokenInfo = response.usage?.totalTokens ? `${response.usage.totalTokens} tokens` : 'Web AI';
+      console.log(chalk.gray(`\n[${tokenInfo} via ${response.provider}${response.model ? ` (${response.model})` : ''}]`));
+
+      // Close web AI browser if used
+      if (response.provider === 'webai') {
+        await aiService.closeWebAI();
+      }
     } catch (error: any) {
       spinner.fail(chalk.red('Error: ' + error.message));
+      if (error.message.includes('Web AI')) {
+        console.log(chalk.yellow('\nTip: Add a Web AI with: openman webai add <name> <url>'));
+        console.log(chalk.yellow('Example: openman webai add doubao https://www.doubao.com/chat/'));
+      }
       process.exit(1);
+    }
+  });
+
+program
+  .command('status')
+  .description('Show OpenMan status and available AI providers')
+  .action(() => {
+    console.log(chalk.cyan('\n📊 OpenMan Status\n'));
+
+    // Check API providers
+    console.log(chalk.white('API Providers:'));
+    const providers = ['openai', 'anthropic', 'google'] as const;
+    providers.forEach((provider) => {
+      const available = aiService.isProviderAvailable(provider);
+      const status = available ? chalk.green('✓ configured') : chalk.gray('✗ not configured');
+      console.log(`  ${provider}: ${status}`);
+    });
+
+    // Check Web AI
+    console.log(chalk.white('\nWeb AI:'));
+    const webAIs = config.listWebAIs();
+    if (webAIs.length === 0) {
+      console.log(chalk.gray('  No custom Web AI configured'));
+      console.log(chalk.gray('  Default: doubao, chatgpt, claude (built-in)'));
+    } else {
+      webAIs.forEach((ai) => {
+        console.log(`  ${chalk.green('✓')} ${ai.name}: ${ai.url}`);
+      });
+    }
+
+    // Show best provider
+    const bestProvider = aiService.getBestProvider();
+    console.log(chalk.white('\nCurrent Provider:'));
+    console.log(`  ${chalk.cyan(bestProvider)} (auto-selected)`);
+
+    if (!aiService.hasAPIProvider()) {
+      console.log(chalk.yellow('\n⚠️  No API keys configured. Will use Web AI (browser-based).'));
+      console.log(chalk.gray('   Set OPENAI_API_KEY or ANTHROPIC_API_KEY for faster responses.'));
     }
   });
 
@@ -886,11 +955,12 @@ deviceCmd
       });
 
       if (result.success && result.data) {
+        const data = result.data as { device: string; path: string; size: number };
         spinner.succeed(chalk.green('Screenshot saved'));
         console.log(chalk.cyan('\n📸 Screenshot Info:'));
-        console.log(chalk.white(`  Device: ${result.data.device}`));
-        console.log(chalk.white(`  Path: ${result.data.path}`));
-        console.log(chalk.white(`  Size: ${(result.data.size / 1024).toFixed(1)} KB`));
+        console.log(chalk.white(`  Device: ${data.device}`));
+        console.log(chalk.white(`  Path: ${data.path}`));
+        console.log(chalk.white(`  Size: ${(data.size / 1024).toFixed(1)} KB`));
       } else {
         spinner.fail(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
@@ -915,11 +985,12 @@ deviceCmd
       spinner.stop();
 
       if (result.success && result.data) {
+        const data = result.data as { device: string; resolution: string; density: number; androidVersion: string };
         console.log(chalk.cyan('\n📺 Screen Info:'));
-        console.log(chalk.white(`  Device: ${result.data.device}`));
-        console.log(chalk.white(`  Resolution: ${result.data.resolution}`));
-        console.log(chalk.white(`  Density: ${result.data.density} DPI`));
-        console.log(chalk.white(`  Android: ${result.data.androidVersion}`));
+        console.log(chalk.white(`  Device: ${data.device}`));
+        console.log(chalk.white(`  Resolution: ${data.resolution}`));
+        console.log(chalk.white(`  Density: ${data.density} DPI`));
+        console.log(chalk.white(`  Android: ${data.androidVersion}`));
       } else {
         console.log(chalk.red('\n✗ ' + (result.error || 'Unknown error')));
         process.exit(1);
@@ -1115,8 +1186,9 @@ program
         process.exit(1);
       }
 
+      const screenshotData = result.data as { path: string; device: string };
       spinner.succeed(chalk.green('Screenshot captured'));
-      console.log(chalk.gray(`  Saved to: ${result.data.path}`));
+      console.log(chalk.gray(`  Saved to: ${screenshotData.path}`));
 
       // Analyze if requested
       if (options.analyze !== false) {
@@ -1134,11 +1206,11 @@ program
               return;
             }
 
-            const analysis = await imageAnalyzer.suggestActions(result.data.path, options.goal);
+            const analysis = await imageAnalyzer.suggestActions(screenshotData.path, options.goal);
 
             analyzeSpinner.succeed(chalk.green('Analysis complete'));
 
-            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
+            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(screenshotData.device));
             console.log(chalk.cyan('\n🔍 Screen Analysis (OpenAI):'));
             console.log(chalk.white(`\n${analysis.description}`));
 
@@ -1181,7 +1253,7 @@ program
 
             analyzeSpinner.succeed(chalk.green('Analysis complete'));
 
-            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
+            console.log(chalk.cyan('\n📱 Device: ') + chalk.white(screenshotData.device));
             console.log(chalk.cyan(`\n🔍 Screen Analysis (Web AI - ${webAIName}):`));
             console.log(chalk.white(`\n${analysis}`));
 

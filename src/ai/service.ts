@@ -1,5 +1,6 @@
 /**
  * AI Service Integrations
+ * Supports API-based and Web-based AI services with auto-fallback
  */
 
 import OpenAI from 'openai';
@@ -8,13 +9,46 @@ import type {
   AIMessage,
   AIResponse,
   AIProvider,
+  WebAIConfig,
 } from '@/types';
 import { config } from '@/core/config';
 import { auditLogger } from '@/core/audit';
+import { webAIService } from '@/ai/webai';
+
+/**
+ * Default Web AI configurations for fallback
+ */
+const DEFAULT_WEB_AIS: WebAIConfig[] = [
+  {
+    name: 'doubao',
+    url: 'https://www.doubao.com/chat/',
+    inputSelector: 'textarea',
+    submitSelector: 'button[data-testid="send-button"], button[type="submit"]',
+    responseSelector: '[class*="message"][class*="assistant"], [class*="response"]',
+    responseTimeout: 60000,
+  },
+  {
+    name: 'chatgpt',
+    url: 'https://chat.openai.com/',
+    inputSelector: 'textarea[placeholder*="Message"]',
+    submitSelector: 'button[data-testid="send-button"]',
+    responseSelector: '[data-message-author-role="assistant"]',
+    responseTimeout: 60000,
+  },
+  {
+    name: 'claude',
+    url: 'https://claude.ai/chat/',
+    inputSelector: 'div[contenteditable="true"]',
+    submitSelector: 'button[aria-label="Send Message"]',
+    responseSelector: '.prose',
+    responseTimeout: 60000,
+  },
+];
 
 export class AIService {
   private openai: OpenAI | null = null;
   private anthropic: Anthropic | null = null;
+  private webAIInitialized = false;
 
   constructor() {
     this.initializeProviders();
@@ -36,11 +70,60 @@ export class AIService {
     }
   }
 
+  /**
+   * Initialize default Web AI configs for fallback
+   */
+  private initializeWebAI(): void {
+    if (this.webAIInitialized) return;
+
+    // Add default web AI configs
+    for (const webAIConfig of DEFAULT_WEB_AIS) {
+      webAIService.addConfig(webAIConfig);
+    }
+
+    // Add user-configured web AIs
+    const userWebAIs = config.listWebAIs();
+    for (const webAIConfig of userWebAIs) {
+      webAIService.addConfig(webAIConfig);
+    }
+
+    this.webAIInitialized = true;
+  }
+
+  /**
+   * Check if any API provider is available
+   */
+  public hasAPIProvider(): boolean {
+    return this.openai !== null || this.anthropic !== null;
+  }
+
+  /**
+   * Get the best available provider
+   */
+  public getBestProvider(): AIProvider {
+    if (this.openai) return 'openai';
+    if (this.anthropic) return 'anthropic';
+    return 'webai'; // Fallback to web AI
+  }
+
   public async completion(
     messages: AIMessage[],
     provider?: AIProvider
   ): Promise<AIResponse> {
-    const targetProvider = provider || config.get('ai').defaultProvider;
+    // Auto-select provider if not specified
+    let targetProvider = provider || config.get('ai').defaultProvider;
+
+    // If specified provider is not available, try to fallback
+    if (!this.isProviderAvailable(targetProvider)) {
+      if (this.hasAPIProvider()) {
+        targetProvider = this.getBestProvider();
+        console.log(`Provider ${provider} not available, falling back to ${targetProvider}`);
+      } else {
+        // No API configured, use Web AI
+        targetProvider = 'webai';
+        console.log('No API configured, using Web AI');
+      }
+    }
 
     await auditLogger.log({
       timestamp: new Date(),
@@ -48,6 +131,7 @@ export class AIService {
       details: {
         provider: targetProvider,
         messageCount: messages.length,
+        autoFallback: provider !== targetProvider,
       },
       result: 'success',
       riskLevel: 'low',
@@ -60,9 +144,31 @@ export class AIService {
         return await this.anthropicCompletion(messages);
       case 'google':
         return await this.googleCompletion(messages);
+      case 'webai':
+        return await this.webAICompletion(messages);
       default:
         throw new Error(`Unsupported provider: ${targetProvider}`);
     }
+  }
+
+  /**
+   * Web AI completion using browser automation
+   */
+  private async webAICompletion(messages: AIMessage[]): Promise<AIResponse> {
+    this.initializeWebAI();
+
+    // Get available web AI configs
+    const webAIs = webAIService.listConfigs();
+    if (webAIs.length === 0) {
+      throw new Error('No Web AI configured. Use "openman webai add <name> <url>" to add one.');
+    }
+
+    // Use the first available Web AI (user can configure priority)
+    const webAIConfig = webAIs[0];
+
+    console.log(`Using Web AI: ${webAIConfig.name} (${webAIConfig.url})`);
+
+    return await webAIService.chat(webAIConfig.name, messages);
   }
 
   private async openaiCompletion(
@@ -194,11 +300,19 @@ export class AIService {
         return this.anthropic !== null;
       case 'google':
         return false; // Not yet implemented
-      case 'custom':
       case 'webai':
+        return true; // Web AI is always available (uses browser)
+      case 'custom':
       default:
         return false;
     }
+  }
+
+  /**
+   * Close Web AI browser when done
+   */
+  public async closeWebAI(): Promise<void> {
+    await webAIService.close();
   }
 }
 
