@@ -1,0 +1,339 @@
+/**
+ * Device Tools - Screenshot and device management
+ */
+
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs/promises';
+import path from 'path';
+import { homedir } from 'os';
+import type { ToolResult } from '@/types';
+
+const execAsync = promisify(exec);
+
+export interface DeviceInfo {
+  id: string;
+  model: string;
+  androidVersion: string;
+  status: 'device' | 'offline' | 'unauthorized';
+}
+
+export interface ScreenshotOptions {
+  deviceId?: string;
+  outputDir?: string;
+  filename?: string;
+}
+
+export class DeviceTools {
+  private adbPath: string;
+  private defaultOutputDir: string;
+
+  constructor() {
+    // Try to find adb in common locations
+    this.adbPath = this.findAdb();
+    this.defaultOutputDir = path.join(homedir(), '.openman', 'screenshots');
+  }
+
+  private findAdb(): string {
+    const commonPaths = [
+      '/home/dulin03/Android/Sdk/platform-tools/adb',
+      path.join(homedir(), 'Android/Sdk/platform-tools/adb'),
+      '/usr/bin/adb',
+      '/usr/local/bin/adb',
+      'adb', // Fallback to PATH
+    ];
+
+    for (const adbPath of commonPaths) {
+      try {
+        // Just return first existing path
+        return adbPath;
+      } catch {
+        continue;
+      }
+    }
+    return 'adb';
+  }
+
+  /**
+   * List connected devices
+   */
+  public async listDevices(): Promise<DeviceInfo[]> {
+    try {
+      const { stdout } = await execAsync(`${this.adbPath} devices -l`);
+      const lines = stdout.split('\n').slice(1); // Skip header
+      const devices: DeviceInfo[] = [];
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const parts = line.split(/\s+/);
+        if (parts.length >= 2) {
+          const id = parts[0];
+          const status = parts[1] as DeviceInfo['status'];
+
+          if (status === 'device') {
+            // Get device info
+            let model = 'Unknown';
+            let androidVersion = 'Unknown';
+
+            try {
+              const { stdout: modelOut } = await execAsync(
+                `${this.adbPath} -s ${id} shell getprop ro.product.model`
+              );
+              model = modelOut.trim();
+
+              const { stdout: versionOut } = await execAsync(
+                `${this.adbPath} -s ${id} shell getprop ro.build.version.release`
+              );
+              androidVersion = versionOut.trim();
+            } catch {
+              // Ignore errors getting device info
+            }
+
+            devices.push({ id, model, androidVersion, status });
+          }
+        }
+      }
+
+      return devices;
+    } catch (error) {
+      throw new Error(`Failed to list devices: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Take a screenshot from device
+   */
+  public async takeScreenshot(options: ScreenshotOptions = {}): Promise<ToolResult> {
+    const devices = await this.listDevices();
+
+    if (devices.length === 0) {
+      return {
+        success: false,
+        error: 'No devices connected. Please connect a device via USB.',
+      };
+    }
+
+    const device = options.deviceId
+      ? devices.find(d => d.id === options.deviceId)
+      : devices[0];
+
+    if (!device) {
+      return {
+        success: false,
+        error: `Device ${options.deviceId} not found`,
+      };
+    }
+
+    // Create output directory
+    const outputDir = options.outputDir || this.defaultOutputDir;
+    await fs.mkdir(outputDir, { recursive: true });
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = options.filename || `screenshot-${timestamp}.png`;
+    const localPath = path.join(outputDir, filename);
+    const devicePath = '/sdcard/screenshot.png';
+
+    try {
+      // Take screenshot on device
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell screencap -p ${devicePath}`
+      );
+
+      // Pull to local
+      await execAsync(
+        `${this.adbPath} -s ${device.id} pull ${devicePath} "${localPath}"`
+      );
+
+      // Clean up device
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell rm ${devicePath}`
+      );
+
+      // Get file info
+      const stats = await fs.stat(localPath);
+
+      return {
+        success: true,
+        data: {
+          path: localPath,
+          filename,
+          size: stats.size,
+          device: device.model,
+          deviceId: device.id,
+          androidVersion: device.androidVersion,
+          timestamp: new Date(),
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Screenshot failed: ${(error as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Get device screen info
+   */
+  public async getScreenInfo(deviceId?: string): Promise<ToolResult> {
+    const devices = await this.listDevices();
+
+    if (devices.length === 0) {
+      return { success: false, error: 'No devices connected' };
+    }
+
+    const device = deviceId
+      ? devices.find(d => d.id === deviceId)
+      : devices[0];
+
+    if (!device) {
+      return { success: false, error: `Device ${deviceId} not found` };
+    }
+
+    try {
+      const { stdout } = await execAsync(
+        `${this.adbPath} -s ${device.id} shell wm size`
+      );
+      const sizeMatch = stdout.match(/Physical size: (\d+x\d+)/);
+
+      const { stdout: densityOut } = await execAsync(
+        `${this.adbPath} -s ${device.id} shell wm density`
+      );
+      const densityMatch = densityOut.match(/Physical density: (\d+)/);
+
+      return {
+        success: true,
+        data: {
+          device: device.model,
+          deviceId: device.id,
+          resolution: sizeMatch ? sizeMatch[1] : 'Unknown',
+          density: densityMatch ? parseInt(densityMatch[1]) : 'Unknown',
+          androidVersion: device.androidVersion,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Failed to get screen info: ${(error as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Tap on screen at coordinates
+   */
+  public async tap(x: number, y: number, deviceId?: string): Promise<ToolResult> {
+    const devices = await this.listDevices();
+    if (devices.length === 0) {
+      return { success: false, error: 'No devices connected' };
+    }
+
+    const device = deviceId
+      ? devices.find(d => d.id === deviceId)
+      : devices[0];
+
+    if (!device) {
+      return { success: false, error: `Device ${deviceId} not found` };
+    }
+
+    try {
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell input tap ${x} ${y}`
+      );
+      return {
+        success: true,
+        data: { action: 'tap', x, y, device: device.model },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Tap failed: ${(error as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Send text to device
+   */
+  public async sendText(text: string, deviceId?: string): Promise<ToolResult> {
+    const devices = await this.listDevices();
+    if (devices.length === 0) {
+      return { success: false, error: 'No devices connected' };
+    }
+
+    const device = deviceId
+      ? devices.find(d => d.id === deviceId)
+      : devices[0];
+
+    if (!device) {
+      return { success: false, error: `Device ${deviceId} not found` };
+    }
+
+    try {
+      // Escape special characters for shell
+      const escapedText = text.replace(/\s/g, '%s').replace(/'/g, "\\'");
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell input text '${escapedText}'`
+      );
+      return {
+        success: true,
+        data: { action: 'input', text, device: device.model },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Text input failed: ${(error as Error).message}`,
+      };
+    }
+  }
+
+  /**
+   * Press key
+   */
+  public async pressKey(keyCode: string, deviceId?: string): Promise<ToolResult> {
+    const devices = await this.listDevices();
+    if (devices.length === 0) {
+      return { success: false, error: 'No devices connected' };
+    }
+
+    const device = deviceId
+      ? devices.find(d => d.id === deviceId)
+      : devices[0];
+
+    if (!device) {
+      return { success: false, error: `Device ${deviceId} not found` };
+    }
+
+    const keyMap: Record<string, string> = {
+      home: 'KEYCODE_HOME',
+      back: 'KEYCODE_BACK',
+      menu: 'KEYCODE_MENU',
+      enter: 'KEYCODE_ENTER',
+      search: 'KEYCODE_SEARCH',
+      volume_up: 'KEYCODE_VOLUME_UP',
+      volume_down: 'KEYCODE_VOLUME_DOWN',
+      power: 'KEYCODE_POWER',
+    };
+
+    const key = keyMap[keyCode.toLowerCase()] || keyCode;
+
+    try {
+      await execAsync(
+        `${this.adbPath} -s ${device.id} shell input keyevent ${key}`
+      );
+      return {
+        success: true,
+        data: { action: 'keyevent', key, device: device.model },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Key press failed: ${(error as Error).message}`,
+      };
+    }
+  }
+}
+
+// Singleton instance
+export const deviceTools = new DeviceTools();

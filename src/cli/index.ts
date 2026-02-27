@@ -834,6 +834,299 @@ function formatDate(date: Date): string {
 }
 
 // ============================================================================
+// Device Commands
+// ============================================================================
+
+const deviceCmd = program.command('device').description('Device management commands');
+
+deviceCmd
+  .command('list')
+  .description('List connected devices')
+  .action(async () => {
+    const spinner = ora('Scanning for devices...').start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const devices = await deviceTools.listDevices();
+
+      spinner.stop();
+
+      if (devices.length === 0) {
+        console.log(chalk.yellow('\nNo devices connected'));
+        console.log(chalk.gray('\nConnect a device via USB and enable USB debugging'));
+        return;
+      }
+
+      console.log(chalk.cyan('\n📱 Connected Devices:'));
+      devices.forEach((device, index) => {
+        console.log(chalk.white(`\n  ${index + 1}. ${device.model}`));
+        console.log(chalk.gray(`     ID: ${device.id}`));
+        console.log(chalk.gray(`     Android: ${device.androidVersion}`));
+        console.log(chalk.gray(`     Status: ${device.status}`));
+      });
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+deviceCmd
+  .command('screenshot')
+  .description('Take a screenshot from device')
+  .option('-d, --device <id>', 'device ID')
+  .option('-o, --output <dir>', 'output directory')
+  .action(async (options) => {
+    const spinner = ora('Taking screenshot...').start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const result = await deviceTools.takeScreenshot({
+        deviceId: options.device,
+        outputDir: options.output,
+      });
+
+      if (result.success && result.data) {
+        spinner.succeed(chalk.green('Screenshot saved'));
+        console.log(chalk.cyan('\n📸 Screenshot Info:'));
+        console.log(chalk.white(`  Device: ${result.data.device}`));
+        console.log(chalk.white(`  Path: ${result.data.path}`));
+        console.log(chalk.white(`  Size: ${(result.data.size / 1024).toFixed(1)} KB`));
+      } else {
+        spinner.fail(chalk.red(result.error || 'Unknown error'));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+deviceCmd
+  .command('screen')
+  .description('Get device screen info')
+  .option('-d, --device <id>', 'device ID')
+  .action(async (options) => {
+    const spinner = ora('Getting screen info...').start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const result = await deviceTools.getScreenInfo(options.device);
+
+      spinner.stop();
+
+      if (result.success && result.data) {
+        console.log(chalk.cyan('\n📺 Screen Info:'));
+        console.log(chalk.white(`  Device: ${result.data.device}`));
+        console.log(chalk.white(`  Resolution: ${result.data.resolution}`));
+        console.log(chalk.white(`  Density: ${result.data.density} DPI`));
+        console.log(chalk.white(`  Android: ${result.data.androidVersion}`));
+      } else {
+        console.log(chalk.red('\n✗ ' + (result.error || 'Unknown error')));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+deviceCmd
+  .command('tap <x> <y>')
+  .description('Tap on screen at coordinates')
+  .option('-d, --device <id>', 'device ID')
+  .action(async (x, y, options) => {
+    const spinner = ora(`Tapping at (${x}, ${y})...`).start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const result = await deviceTools.tap(parseInt(x), parseInt(y), options.device);
+
+      if (result.success) {
+        spinner.succeed(chalk.green('Tap executed'));
+      } else {
+        spinner.fail(chalk.red(result.error || 'Unknown error'));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+deviceCmd
+  .command('input <text>')
+  .description('Send text to device')
+  .option('-d, --device <id>', 'device ID')
+  .action(async (text, options) => {
+    const spinner = ora('Sending text...').start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const result = await deviceTools.sendText(text, options.device);
+
+      if (result.success) {
+        spinner.succeed(chalk.green('Text sent'));
+      } else {
+        spinner.fail(chalk.red(result.error || 'Unknown error'));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+deviceCmd
+  .command('key <keycode>')
+  .description('Press a key (home, back, menu, enter, etc.)')
+  .option('-d, --device <id>', 'device ID')
+  .action(async (keycode, options) => {
+    const spinner = ora(`Pressing ${keycode}...`).start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+      const result = await deviceTools.pressKey(keycode, options.device);
+
+      if (result.success) {
+        spinner.succeed(chalk.green(`Key ${keycode} pressed`));
+      } else {
+        spinner.fail(chalk.red(result.error || 'Unknown error'));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// Analyze Commands
+// ============================================================================
+
+program
+  .command('analyze <image>')
+  .description('Analyze an image using AI vision')
+  .option('-p, --prompt <text>', 'custom analysis prompt')
+  .option('--elements', 'find UI elements')
+  .option('--suggest [goal]', 'suggest actions')
+  .action(async (image, options) => {
+    const spinner = ora('Analyzing image...').start();
+
+    try {
+      const { imageAnalyzer } = await import('@/ai/vision');
+
+      if (!imageAnalyzer.isAvailable()) {
+        spinner.fail(chalk.red('OpenAI API key not configured. Set OPENAI_API_KEY environment variable.'));
+        process.exit(1);
+      }
+
+      let result;
+      if (options.elements) {
+        result = await imageAnalyzer.findUIElements(image);
+      } else if (options.suggest !== undefined) {
+        result = await imageAnalyzer.suggestActions(image, options.suggest);
+      } else {
+        result = await imageAnalyzer.analyzeImage(image, options.prompt);
+      }
+
+      spinner.succeed(chalk.green('Analysis complete'));
+
+      console.log(chalk.cyan('\n🔍 Analysis Result:'));
+      console.log(chalk.white(`\n${result.description}`));
+
+      if (result.elements && result.elements.length > 0) {
+        console.log(chalk.cyan('\n📋 UI Elements:'));
+        result.elements.forEach((el, i) => {
+          console.log(chalk.white(`  ${i + 1}. ${el}`));
+        });
+      }
+
+      if (result.suggestions && result.suggestions.length > 0) {
+        console.log(chalk.cyan('\n💡 Suggestions:'));
+        result.suggestions.forEach((s, i) => {
+          console.log(chalk.white(`  ${i + 1}. ${s}`));
+        });
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// Screenshot & Analyze (Combined Command)
+// ============================================================================
+
+program
+  .command('capture')
+  .description('Take screenshot and analyze it')
+  .option('-d, --device <id>', 'device ID')
+  .option('-g, --goal <text>', 'analysis goal')
+  .option('--no-analyze', 'skip analysis, just capture')
+  .action(async (options) => {
+    const spinner = ora('Taking screenshot...').start();
+
+    try {
+      const { deviceTools } = await import('@/tools/device');
+
+      // Take screenshot
+      const result = await deviceTools.takeScreenshot({
+        deviceId: options.device,
+      });
+
+      if (!result.success || !result.data) {
+        spinner.fail(chalk.red(result.error || 'Screenshot failed'));
+        process.exit(1);
+      }
+
+      spinner.succeed(chalk.green('Screenshot captured'));
+      console.log(chalk.gray(`  Saved to: ${result.data.path}`));
+
+      // Analyze if requested
+      if (options.analyze !== false) {
+        const analyzeSpinner = ora('Analyzing screenshot...').start();
+
+        try {
+          const { imageAnalyzer } = await import('@/ai/vision');
+
+          if (!imageAnalyzer.isAvailable()) {
+            analyzeSpinner.warn(chalk.yellow('OpenAI API not configured, skipping analysis'));
+            console.log(chalk.gray('Set OPENAI_API_KEY to enable analysis'));
+            return;
+          }
+
+          const analysis = await imageAnalyzer.suggestActions(result.data.path, options.goal);
+
+          analyzeSpinner.succeed(chalk.green('Analysis complete'));
+
+          console.log(chalk.cyan('\n📱 Device: ') + chalk.white(result.data.device));
+          console.log(chalk.cyan('\n🔍 Screen Analysis:'));
+          console.log(chalk.white(`\n${analysis.description}`));
+
+          if (analysis.elements && analysis.elements.length > 0) {
+            console.log(chalk.cyan('\n📋 UI Elements:'));
+            analysis.elements.slice(0, 10).forEach((el, i) => {
+              console.log(chalk.white(`  ${i + 1}. ${el}`));
+            });
+          }
+
+          if (analysis.suggestions && analysis.suggestions.length > 0) {
+            console.log(chalk.cyan('\n💡 Suggested Actions:'));
+            analysis.suggestions.forEach((s, i) => {
+              console.log(chalk.white(`  ${i + 1}. ${s}`));
+            });
+          }
+        } catch (error: any) {
+          analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
+        }
+      }
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
 // Main
 // ============================================================================
 
