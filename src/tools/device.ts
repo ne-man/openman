@@ -5,6 +5,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import type { ToolResult } from '@/types';
@@ -36,22 +37,27 @@ export class DeviceTools {
 
   private findAdb(): string {
     const commonPaths = [
-      '/home/dulin03/Android/Sdk/platform-tools/adb',
+      // macOS paths
+      path.join(homedir(), 'Library/Android/sdk/platform-tools/adb'),
+      '/opt/homebrew/bin/adb',
+      // Linux paths
       path.join(homedir(), 'Android/Sdk/platform-tools/adb'),
       '/usr/bin/adb',
       '/usr/local/bin/adb',
-      'adb', // Fallback to PATH
+      // Windows path
+      path.join(homedir(), 'AppData/Local/Android/Sdk/platform-tools/adb.exe'),
     ];
 
     for (const adbPath of commonPaths) {
       try {
-        // Just return first existing path
-        return adbPath;
+        if (existsSync(adbPath)) {
+          return adbPath;
+        }
       } catch {
         continue;
       }
     }
-    return 'adb';
+    return 'adb'; // Fallback to PATH
   }
 
   /**
