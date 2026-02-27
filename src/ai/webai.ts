@@ -229,25 +229,26 @@ export class WebAIService {
     // Check for verification/captcha dialogs
     await this.handleVerificationDialog(page);
 
-    // Focus and type the message
+    // Input content using CDP insertText (paste-like, no key events)
     const inputSelector = config.inputSelector || 'textarea';
     await page.click(inputSelector);
-    await page.type(inputSelector, lastUserMessage.content, {
-      delay: 30,
-    });
+    
+    // Clear existing content first
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    
+    // Use CDP to insert text at once (like paste)
+    const client = await page.createCDPSession();
+    await client.send('Input.insertText', { text: lastUserMessage.content });
+    await client.detach();
 
-    // Wait a bit before clicking submit
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Wait for content to be processed
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Try to submit - use keyboard Enter as fallback
-    try {
-      const submitSelector = config.submitSelector || 'button[type="submit"]';
-      await page.waitForSelector(submitSelector, { timeout: 3000 });
-      await page.click(submitSelector);
-    } catch {
-      // Fallback: press Enter to submit
-      await page.keyboard.press('Enter');
-    }
+    // Press Enter to submit
+    await page.keyboard.press('Enter');
 
     // Wait for AI response
     const responseSelector = config.responseSelector || '.response';
@@ -389,20 +390,23 @@ export class WebAIService {
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    // Type the query
+    // Input query using CDP insertText (paste-like)
     const inputSelector = config.inputSelector || 'textarea';
     await page.click(inputSelector);
-    await page.type(inputSelector, query, { delay: 30 });
+    
+    // Clear and insert text at once
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    
+    const client = await page.createCDPSession();
+    await client.send('Input.insertText', { text: query });
+    await client.detach();
 
-    // Submit
-    await new Promise(resolve => setTimeout(resolve, 500));
-    try {
-      const submitSelector = config.submitSelector || 'button[type="submit"]';
-      await page.waitForSelector(submitSelector, { timeout: 3000 });
-      await page.click(submitSelector);
-    } catch {
-      await page.keyboard.press('Enter');
-    }
+    // Wait then submit
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await page.keyboard.press('Enter');
 
     // Wait for response
     const responseSelector = config.responseSelector || '.response';
@@ -481,24 +485,27 @@ export class WebAIService {
     // Check for verification dialogs
     await this.handleVerificationDialog(page);
 
-    // Type the follow-up question
+    // Input follow-up using CDP insertText (paste-like)
     const inputSelector = config.inputSelector || 'textarea';
     await page.click(inputSelector);
-    await page.type(inputSelector, question, { delay: 30 });
+    
+    // Clear and insert text at once
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    
+    const client = await page.createCDPSession();
+    await client.send('Input.insertText', { text: question });
+    await client.detach();
 
     // Get current response count
     const responseSelector = config.responseSelector || '.response';
     const initialCount = await page.$$eval(responseSelector, els => els.length);
 
-    // Submit
-    await new Promise(resolve => setTimeout(resolve, 500));
-    try {
-      const submitSelector = config.submitSelector || 'button[type="submit"]';
-      await page.waitForSelector(submitSelector, { timeout: 3000 });
-      await page.click(submitSelector);
-    } catch {
-      await page.keyboard.press('Enter');
-    }
+    // Wait then submit
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await page.keyboard.press('Enter');
 
     // Wait for new response
     await page.waitForFunction(
