@@ -6,19 +6,22 @@ import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import { homedir } from 'os';
-import type { OpenManConfig, AIProvider } from '@/types';
+import type { OpenManConfig, AIProvider, WebAIConfig } from '@/types';
 
 dotenv.config();
 
 const CONFIG_FILE = path.join(homedir(), '.openman', 'config.json');
+const WEBAI_FILE = path.join(homedir(), '.openman', 'webai.json');
 
 export class ConfigManager {
   private config: OpenManConfig;
   private persistedConfig: Partial<OpenManConfig> = {};
+  private webAIs: WebAIConfig[] = [];
 
   constructor() {
     this.config = this.loadConfig();
     this.loadPersistedConfig();
+    this.loadWebAIs();
   }
 
   private loadConfig(): OpenManConfig {
@@ -286,6 +289,98 @@ export class ConfigManager {
    */
   public getConfigPath(): string {
     return CONFIG_FILE;
+  }
+
+  // ============================================================================
+  // Web AI Configuration Management
+  // ============================================================================
+
+  /**
+   * Load Web AI configurations from file
+   */
+  private async loadWebAIs(): Promise<void> {
+    try {
+      const content = await fs.readFile(WEBAI_FILE, 'utf-8');
+      this.webAIs = JSON.parse(content);
+      
+      // Also merge into config
+      this.config.ai.webAI = this.webAIs;
+    } catch (error) {
+      // File doesn't exist yet
+      this.webAIs = [];
+    }
+  }
+
+  /**
+   * Add a Web AI configuration
+   */
+  public async addWebAI(config: WebAIConfig): Promise<void> {
+    // Check for duplicate name
+    if (this.webAIs.some(ai => ai.name === config.name)) {
+      throw new Error(`Web AI with name "${config.name}" already exists`);
+    }
+
+    this.webAIs.push(config);
+    this.config.ai.webAI = this.webAIs;
+    await this.saveWebAIs();
+  }
+
+  /**
+   * Update a Web AI configuration
+   */
+  public async updateWebAI(name: string, config: Partial<WebAIConfig>): Promise<void> {
+    const index = this.webAIs.findIndex(ai => ai.name === name);
+    if (index === -1) {
+      throw new Error(`Web AI "${name}" not found`);
+    }
+
+    this.webAIs[index] = { ...this.webAIs[index], ...config };
+    this.config.ai.webAI = this.webAIs;
+    await this.saveWebAIs();
+  }
+
+  /**
+   * Remove a Web AI configuration
+   */
+  public async removeWebAI(name: string): Promise<void> {
+    const index = this.webAIs.findIndex(ai => ai.name === name);
+    if (index === -1) {
+      throw new Error(`Web AI "${name}" not found`);
+    }
+
+    this.webAIs.splice(index, 1);
+    this.config.ai.webAI = this.webAIs;
+    await this.saveWebAIs();
+  }
+
+  /**
+   * Get a Web AI configuration
+   */
+  public getWebAI(name: string): WebAIConfig | undefined {
+    return this.webAIs.find(ai => ai.name === name);
+  }
+
+  /**
+   * List all Web AI configurations
+   */
+  public listWebAIs(): WebAIConfig[] {
+    return [...this.webAIs];
+  }
+
+  /**
+   * Save Web AI configurations to file
+   */
+  private async saveWebAIs(): Promise<void> {
+    const configDir = path.dirname(WEBAI_FILE);
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(WEBAI_FILE, JSON.stringify(this.webAIs, null, 2), 'utf-8');
+  }
+
+  /**
+   * Get Web AI config file path
+   */
+  public getWebAIPath(): string {
+    return WEBAI_FILE;
   }
 }
 

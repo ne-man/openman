@@ -9,12 +9,17 @@ OpenMan is a human-like AI companion that bridges the gap between AI assistants 
 ## Features
 
 - 🌐 **Web Browsing Engine** - Navigate, interact, and transact on the web autonomously
-- 🤖 **Multi-Provider AI Integration** - OpenAI, Anthropic, Google, and more
+- 🤖 **Multi-Provider AI Integration** - OpenAI, Anthropic, Google, and more with streaming support
+- 🌐 **Web AI Support** - Configure any AI service by name and URL (ChatGPT, Claude, Gemini, etc.)
 - 🛠️ **Local Tools Integration** - Shell, files, applications, and system APIs
-- 🧠 **Reasoning & Planning** - Break down complex tasks into actionable steps
-- 📚 **Memory & Learning** - Remember preferences, patterns, and workflows
+- 🧠 **Memory & Learning** - Remember preferences, patterns, and workflows (episodic, semantic, and preference memory)
+- 📝 **Session Management** - Multi-session chat with history management
 - 🔒 **Permission System** - Granular controls over what OpenMan can do
 - 📝 **Audit Logging** - All actions and decisions are logged and reviewable
+- 🌐 **Web UI** - Beautiful real-time chat interface with streaming responses
+- 🔌 **WebSocket Gateway** - Real-time bi-directional communication
+- 🔁 **Advanced Error Handling** - Retry mechanisms, circuit breaker, timeout handling
+- 📊 **Reasoning & Planning** - Break down complex tasks into actionable steps
 
 ## Installation
 
@@ -22,11 +27,8 @@ OpenMan is a human-like AI companion that bridges the gap between AI assistants 
 # Install dependencies
 npm install
 
-# Copy environment variables
-cp .env.example .env
-
-# Edit .env and add your API keys
-nano .env
+# Initialize configuration (optional, for interactive setup)
+npm run dev init
 
 # Build the project
 npm run build
@@ -35,27 +37,85 @@ npm run build
 ## Quick Start
 
 ```bash
-# Development mode
-npm run dev
+# Start Web UI with all services (recommended)
+npm run dev start
 
-# Start CLI
-npm start
+# Open your browser to http://localhost:3000
 
-# Start web UI
-npm run start ui
+# Or use CLI commands
+npm run dev chat "Hello, OpenMan!"
+npm run dev browse "https://example.com"
+npm run dev search "latest AI news"
 ```
 
 ## Usage Examples
 
+### Web AI Configuration (New!)
+
 ```bash
+# Add a Web AI service (only requires name and url)
+npm run dev webai add chatgpt https://chat.openai.com
+
+# Add with custom selectors
+npm run dev webai add claude https://claude.ai \
+  --input 'div[contenteditable="true"]' \
+  --submit 'button[aria-label="Send Message"]'
+
+# List all Web AI services
+npm run dev webai list
+
+# Chat with a Web AI
+npm run dev webai chat chatgpt "What is TypeScript?"
+
+# Remove a Web AI
+npm run dev webai remove chatgpt
+```
+
+### Web UI
+
+```bash
+# Start the web interface
+npm run dev start
+
+# Features:
+# - Real-time streaming chat
+# - Session management
+# - Memory integration
+# - Provider/model selection
+# - Beautiful responsive UI
+```
+
+### CLI Commands
+
+```bash
+# Chat with AI (supports streaming)
+npm run dev chat "Hello, OpenMan!"
+
 # Research task
-openman "Research the latest AI developments and summarize"
+npm run dev search "latest TypeScript features"
 
-# Shopping assistant
-openman "Find the best price for Sony headphones"
+# Browse web pages
+npm run dev browse "https://example.com" --query "What is this about?"
 
-# Web automation
-openman browse amazon.com --search "wireless mouse" --compare
+# Plan complex tasks
+npm run dev plan "Create a Node.js REST API with authentication"
+
+# Manage memory
+npm run dev memory add "I prefer dark mode"
+npm run dev memory query "preferences"
+npm run dev memory stats
+
+# Manage sessions
+npm run dev session list
+npm run dev session create "New Conversation"
+npm run dev session export <id> --format json
+
+# View logs
+npm run dev logs --level info --tail 50
+
+# Configure OpenMan
+npm run dev config set --key ai.defaultModel --value "gpt-4"
+npm run dev config export
 ```
 
 ## Configuration
@@ -64,7 +124,39 @@ OpenMan can be configured via:
 
 - **Environment variables**: `.env` file
 - **Config file**: `~/.openman/config.json`
+- **Web AI file**: `~/.openman/webai.json`
 - **CLI flags**: Command-line arguments
+
+### Web AI Configuration
+
+Web AI services are configured with just `name` and `url`:
+
+```json
+// ~/.openman/webai.json
+[
+  {
+    "name": "chatgpt",
+    "url": "https://chat.openai.com"
+  },
+  {
+    "name": "claude",
+    "url": "https://claude.ai"
+  },
+  {
+    "name": "gemini",
+    "url": "https://gemini.google.com",
+    "inputSelector": "textarea",
+    "responseTimeout": 60000
+  }
+]
+```
+
+Supported Web AI services with auto-detected selectors:
+- ChatGPT (chat.openai.com)
+- Claude (claude.ai)
+- Gemini (gemini.google.com)
+- Microsoft Copilot (copilot.microsoft.com)
+- Poe (poe.com)
 
 See [openman.md](openman.md) for detailed documentation.
 
@@ -73,16 +165,19 @@ See [openman.md](openman.md) for detailed documentation.
 ```
 openman/
 ├── src/
-│   ├── core/          # Reasoning, planning, memory
+│   ├── core/          # Core systems (config, memory, session, audit, reasoning)
 │   ├── browser/       # Web browsing engine
-│   ├── ai/           # AI service integrations
+│   ├── ai/           # AI service integrations (OpenAI, Anthropic, Google)
+│   ├── streaming/    # Streaming AI responses
 │   ├── tools/        # Local tools integration
 │   ├── permissions/  # Permission system
+│   ├── gateway/      # WebSocket gateway
+│   ├── web/          # Web UI server
+│   ├── web/public/   # Static web UI files (HTML/CSS/JS)
 │   ├── cli/          # Command-line interface
-│   ├── ui/           # Web UI
-│   ├── utils/        # Utility functions
+│   ├── utils/        # Utility functions (errors, logger)
 │   └── types/        # TypeScript types
-├── docs/             # Documentation
+├── docs/             # Documentation (openman.md, COMPARISON.md)
 └── tests/            # Test files
 ```
 

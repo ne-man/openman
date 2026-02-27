@@ -11,6 +11,9 @@ export { config } from '@/core/config';
 export { auditLogger } from '@/core/audit';
 export { memorySystem } from '@/core/memory';
 export { sessionManager } from '@/core/session';
+export { gateway } from '@/gateway/websocket';
+export { streamingAI } from '@/ai/streaming';
+export { WebServer } from '@/web/server';
 
 // Error handling
 export {
@@ -34,4 +37,4 @@ export {
 export * from '@/types';
 
 // Re-export from config
-export type { Session, MemoryQuery } from '@/types';
+export type { Session, MemoryQuery, StreamChunk, StreamOptions } from '@/types';

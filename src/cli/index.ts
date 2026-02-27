@@ -428,17 +428,88 @@ program
   });
 
 // ============================================================================
-// Config Commands
+// System Commands
 // ============================================================================
 
 program
-  .command('config show')
-  .description('Show current configuration')
-  .action(() => {
-    const configData = config.getAll();
+  .command('start')
+  .description('Start OpenMan services')
+  .option('-w, --web', 'start web server')
+  .option('-g, --gateway', 'start WebSocket gateway')
+  .option('--all', 'start all services')
+  .action(async (options) => {
+    if (!options.web && !options.gateway && !options.all) {
+      options.all = true;
+    }
 
-    console.log(chalk.cyan('\n⚙️  Configuration:'));
-    console.log(JSON.stringify(configData, null, 2));
+    const { WebServer } = await import('@/web/server');
+
+    if (options.web || options.all) {
+      const webServer = new WebServer();
+      console.log(chalk.cyan('\n🌐 Starting Web UI server...\n'));
+      await webServer.start();
+    }
+
+    console.log(chalk.green('\n✓ OpenMan services started'));
+    console.log(chalk.white('\nAccess Web UI at: http://localhost:3000'));
+    console.log(chalk.white('WebSocket Gateway at: ws://localhost:3001'));
+  });
+
+program
+  .command('init')
+  .description('Initialize OpenMan configuration')
+  .action(async () => {
+    console.log(chalk.cyan('\n🚀 Initializing OpenMan...\n'));
+
+    const readline = await import('readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    // Get OpenAI API key
+    const openaiKey = await question(
+      rl,
+      chalk.cyan('Enter your OpenAI API key (or press Enter to skip): ')
+    );
+
+    // Get Anthropic API key
+    const anthropicKey = await question(
+      rl,
+      chalk.cyan('Enter your Anthropic API key (or press Enter to skip): ')
+    );
+
+    // Get Google API key
+    const googleKey = await question(
+      rl,
+      chalk.cyan('Enter your Google API key (or press Enter to skip): ')
+    );
+
+    rl.close();
+
+    // Update environment variables
+    if (openaiKey) process.env.OPENAI_API_KEY = openaiKey;
+    if (anthropicKey) process.env.ANTHROPIC_API_KEY = anthropicKey;
+    if (googleKey) process.env.GOOGLE_API_KEY = googleKey;
+
+    // Validate configuration
+    const validation = config.validate();
+    if (!validation.valid) {
+      console.log(chalk.red('\n✗ Configuration errors:'));
+      validation.errors.forEach(error => {
+        console.log(chalk.red(`  - ${error}`));
+      });
+      process.exit(1);
+    }
+
+    // Save configuration
+    await config.save();
+
+    console.log(chalk.green('\n✓ OpenMan initialized successfully!'));
+    console.log(chalk.white('\nNext steps:'));
+    console.log(chalk.white('  npm run build'));
+    console.log(chalk.white('  npm run dev start'));
+    console.log(chalk.white('  npm run dev chat "Hello, OpenMan!"'));
   });
 
 program
@@ -637,6 +708,136 @@ program
     console.log(chalk.white('\nNext steps:'));
     console.log(chalk.white('  npm run build'));
     console.log(chalk.white('  npm run dev chat "Hello, OpenMan!"'));
+  });
+
+// ============================================================================
+// Web AI Commands
+// ============================================================================
+
+program
+  .command('webai add <name> <url>')
+  .description('Add a Web AI service')
+  .option('-i, --input <selector>', 'CSS selector for input field')
+  .option('-s, --submit <selector>', 'CSS selector for submit button')
+  .option('-r, --response <selector>', 'CSS selector for response area')
+  .option('-t, --timeout <ms>', 'Response timeout in ms', '60000')
+  .action(async (name, url, options) => {
+    const spinner = ora(`Adding Web AI "${name}"...`).start();
+
+    try {
+      await config.addWebAI({
+        name,
+        url,
+        inputSelector: options.input,
+        submitSelector: options.submit,
+        responseSelector: options.response,
+        responseTimeout: parseInt(options.timeout),
+      });
+
+      spinner.succeed(chalk.green(`Web AI "${name}" added`));
+      console.log(chalk.gray(`  URL: ${url}`));
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('webai list')
+  .description('List all Web AI services')
+  .action(() => {
+    const webais = config.listWebAIs();
+
+    if (webais.length === 0) {
+      console.log(chalk.yellow('\nNo Web AI services configured'));
+      console.log(chalk.gray('\nAdd one with: openman webai add <name> <url>'));
+      return;
+    }
+
+    console.log(chalk.cyan('\n🌐 Web AI Services:'));
+    webais.forEach((ai, index) => {
+      console.log(chalk.white(`\n  ${index + 1}. ${ai.name}`));
+      console.log(chalk.gray(`     URL: ${ai.url}`));
+      if (ai.inputSelector) {
+        console.log(chalk.gray(`     Input: ${ai.inputSelector}`));
+      }
+      if (ai.responseTimeout) {
+        console.log(chalk.gray(`     Timeout: ${ai.responseTimeout}ms`));
+      }
+    });
+
+    console.log(chalk.cyan(`\n📊 Total: ${webais.length} Web AI service(s)`));
+  });
+
+program
+  .command('webai remove <name>')
+  .description('Remove a Web AI service')
+  .action(async (name) => {
+    const spinner = ora(`Removing Web AI "${name}"...`).start();
+
+    try {
+      await config.removeWebAI(name);
+      spinner.succeed(chalk.green(`Web AI "${name}" removed`));
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('webai show <name>')
+  .description('Show Web AI details')
+  .action((name) => {
+    const ai = config.getWebAI(name);
+
+    if (!ai) {
+      console.log(chalk.red(`\n✗ Web AI "${name}" not found`));
+      process.exit(1);
+    }
+
+    console.log(chalk.cyan(`\n🌐 Web AI: ${ai.name}`));
+    console.log(chalk.white(`\n  URL: ${ai.url}`));
+    if (ai.inputSelector) {
+      console.log(chalk.white(`  Input Selector: ${ai.inputSelector}`));
+    }
+    if (ai.submitSelector) {
+      console.log(chalk.white(`  Submit Selector: ${ai.submitSelector}`));
+    }
+    if (ai.responseSelector) {
+      console.log(chalk.white(`  Response Selector: ${ai.responseSelector}`));
+    }
+    if (ai.responseTimeout) {
+      console.log(chalk.white(`  Timeout: ${ai.responseTimeout}ms`));
+    }
+  });
+
+program
+  .command('webai chat <name> <message>')
+  .description('Chat with a Web AI service')
+  .action(async (name, message) => {
+    const spinner = ora(`Chatting with ${name}...`).start();
+
+    try {
+      const { webAIService } = await import('@/ai/webai');
+      const aiConfig = config.getWebAI(name);
+
+      if (!aiConfig) {
+        spinner.fail(chalk.red(`Web AI "${name}" not found`));
+        process.exit(1);
+      }
+
+      webAIService.addConfig(aiConfig);
+      const response = await webAIService.query(name, message);
+
+      spinner.succeed(chalk.green('Response received'));
+      console.log(chalk.cyan('\n💬 Response:'));
+      console.log(chalk.white(response));
+
+      await webAIService.close();
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
   });
 
 // ============================================================================

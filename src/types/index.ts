@@ -6,7 +6,7 @@
 // AI Service Types
 // ============================================================================
 
-export type AIProvider = 'openai' | 'anthropic' | 'google' | 'custom';
+export type AIProvider = 'openai' | 'anthropic' | 'google' | 'custom' | 'webai';
 
 export interface AIMessage {
   role: 'system' | 'user' | 'assistant';
@@ -31,6 +31,27 @@ export interface AIServiceConfig {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+}
+
+/**
+ * Web AI Configuration - AI service accessed via browser
+ * Only requires name and url
+ */
+export interface WebAIConfig {
+  /** Unique name for this AI service */
+  name: string;
+  /** URL of the AI service (e.g., https://chat.openai.com, https://claude.ai) */
+  url: string;
+  /** Optional: CSS selector for input field */
+  inputSelector?: string;
+  /** Optional: CSS selector for submit button */
+  submitSelector?: string;
+  /** Optional: CSS selector for response area */
+  responseSelector?: string;
+  /** Optional: Wait time for response (ms) */
+  responseTimeout?: number;
+  /** Optional: Additional headers or cookies */
+  headers?: Record<string, string>;
 }
 
 // ============================================================================
@@ -143,6 +164,8 @@ export interface OpenManConfig {
     anthropic?: AIServiceConfig;
     google?: AIServiceConfig;
     defaultProvider: AIProvider;
+    /** Web AI services - configured by name and url only */
+    webAI?: WebAIConfig[];
   };
   browser: BrowserConfig;
   permissions: ToolConfig['permissions'];

@@ -27,6 +27,8 @@
       "@/ai/*": ["ai/*"],
       "@/tools/*": ["tools/*"],
       "@/permissions/*": ["permissions/*"],
+      "@/gateway/*": ["gateway/*"],
+      "@/web/*": ["web/*"],
       "@/cli/*": ["cli/*"],
       "@/ui/*": ["ui/*"],
       "@/utils/*": ["utils/*"],
