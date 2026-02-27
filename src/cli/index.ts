@@ -1098,6 +1098,7 @@ program
   .option('--no-analyze', 'skip analysis, just capture')
   .option('-a, --ai <provider>', 'AI provider (openai, webai)', 'openai')
   .option('-w, --webai <name>', 'Web AI name (e.g., doubao, claude)')
+  .option('--show-browser', 'show browser window for Web AI (to login)')
   .action(async (options) => {
     const spinner = ora('Taking screenshot...').start();
 

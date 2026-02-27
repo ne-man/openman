@@ -37,12 +37,17 @@ export class BrowserEngine {
       launchOptions.executablePath = this.options.executablePath;
     }
 
+    // Add userDataDir if provided (for preserving Chrome login)
+    if (this.options?.userDataDir) {
+      launchOptions.args.push(`--user-data-dir=${this.options.userDataDir}`);
+    }
+
     this.browser = await puppeteer.launch(launchOptions);
 
     await auditLogger.log({
       timestamp: new Date(),
       action: 'browser.initialize',
-      details: { headless: headlessMode },
+      details: { headless: headlessMode, userDataDir: this.options?.userDataDir },
       result: 'success',
       riskLevel: 'low',
     });

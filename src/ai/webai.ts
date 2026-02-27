@@ -5,6 +5,8 @@
 import type { WebAIConfig, AIMessage, AIResponse, AIProvider } from '@/types';
 import { BrowserEngine } from '@/browser/engine';
 import { auditLogger } from '@/core/audit';
+import path from 'path';
+import { homedir } from 'os';
 
 /**
  * Default selectors for popular AI services
@@ -52,17 +54,49 @@ export class WebAIService {
   private configs: Map<string, WebAIConfig> = new Map();
   private browserEngine: BrowserEngine | null = null;
   private initialized = false;
+  private chromeUserDataDir: string;
 
   constructor() {
-    // Browser will be initialized on first use
+    // Chrome user data directory on Linux
+    this.chromeUserDataDir = path.join(homedir(), '.config', 'google-chrome', 'Default');
   }
 
   /**
-   * Ensure browser is initialized
+   * Ensure browser is initialized with Chrome session
    */
   private async ensureInitialized(): Promise<void> {
     if (!this.initialized || !this.browserEngine) {
-      this.browserEngine = new BrowserEngine();
+      // Try to use Chrome's user data directory to preserve login
+      const launchOptions: any = {
+        headless: false, // Need non-headless to see browser
+        args: [
+          `--user-data-dir=${this.chromeUserDataDir}`,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+        ],
+      };
+
+      // Try to connect to existing Chrome instance first
+      try {
+        // Check if Chrome is running with remote debugging
+        const { execSync } = require('child_process');
+        const isChromeRunning = execSync('pgrep -x "chrome" || pgrep -x "google-chrome" || echo "not running"', {
+          encoding: 'utf-8',
+        }).includes('chrome');
+
+        if (isChromeRunning) {
+          launchOptions.headless = false;
+        }
+      } catch {
+        // Chrome not running, will start new instance
+      }
+
+      this.browserEngine = new BrowserEngine({
+        headless: launchOptions.headless,
+        userDataDir: this.chromeUserDataDir,
+      });
+      
       await this.browserEngine.initialize();
       this.initialized = true;
     }
