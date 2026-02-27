@@ -41,9 +41,9 @@ const DEFAULT_SELECTORS: Record<string, Partial<WebAIConfig>> = {
     responseTimeout: 60000,
   },
   'doubao.com': {
-    inputSelector: 'textarea[placeholder*="输入"], textarea[placeholder*="请输入"], textarea',
-    submitSelector: 'button[type="submit"], button[aria-label*="发送"], button[aria-label*="Send"]',
-    responseSelector: '[class*="message"][class*="assistant"], [class*="response"], [class*="answer"]',
+    inputSelector: 'textarea',
+    submitSelector: 'button, [class*="send"], [class*="submit"]',
+    responseSelector: '[class*="message"], [class*="response"], [class*="answer"]',
     responseTimeout: 60000,
   },
 };
@@ -142,31 +142,42 @@ export class WebAIService {
     const { page } = await this.browserEngine!.navigate(config.url);
 
     // Wait for page to load
-    await page.waitForSelector(config.inputSelector || 'textarea', {
-      timeout: 10000,
+    const inputSelector = config.inputSelector || 'textarea';
+    await page.waitForSelector(inputSelector, {
+      timeout: 15000,
     });
 
     // Type the message
-    await page.type(config.inputSelector || 'textarea', lastUserMessage.content, {
-      delay: 50,
+    await page.type(inputSelector, lastUserMessage.content, {
+      delay: 30,
     });
 
-    // Click submit button
-    await page.click(config.submitSelector || 'button[type="submit"]');
+    // Press Enter to submit
+    await page.keyboard.press('Enter');
 
-    // Wait for response
-    const responseSelector = config.responseSelector || '.response';
-    await page.waitForSelector(responseSelector, {
-      timeout: config.responseTimeout || 30000,
+    // Wait a bit for response to start appearing
+    await page.waitForTimeout(3000);
+
+    // Get page content for response
+    const responseText = await page.evaluate(() => {
+      // Try to find response content
+      const selectors = [
+        '[class*="message"]',
+        '[class*="response"]', 
+        '[class*="answer"]',
+        '[class*="content"]',
+        '.prose',
+        'body'
+      ];
+      
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent && el.textContent.length > 50) {
+          return el.textContent;
+        }
+      }
+      return document.body.innerText;
     });
-
-    // Extract response text
-    const responseElement = await page.$(responseSelector);
-    if (!responseElement) {
-      throw new Error('Response element not found');
-    }
-
-    const responseText = await responseElement.evaluate((el: Element) => el.textContent || '');
 
     return {
       content: responseText.trim(),
