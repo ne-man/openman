@@ -557,47 +557,169 @@ export class WebAIService {
     // Check for verification dialogs - pass configName for fallback
     await this.handleVerificationDialog(page, configName);
 
-    // Common image upload selectors for different AI services
-    const imageUploadSelectors = [
-      'input[type="file"]',
-      '[data-testid="image-upload"]',
-      '[class*="upload"] input[type="file"]',
-      'button[aria-label*="图片"], button[aria-label*="image"], button[aria-label*="上传"]',
-      '[class*="attach"] input[type="file"]',
-    ];
-
     let uploaded = false;
+    const fs = await import('fs/promises');
 
-    // Try to find and use file input
-    for (const selector of imageUploadSelectors) {
-      try {
-        const fileInput = await page.$(selector);
-        if (fileInput) {
-          const tagName = await fileInput.evaluate((el: Element) => el.tagName.toLowerCase());
-          if (tagName === 'input') {
-            // Direct file input
-            await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
-            uploaded = true;
-            console.log('  📷 图片已上传');
-            break;
+    // Method 1: Try clipboard paste (works for yuanbao and many others)
+    try {
+      // Focus on input area first
+      const inputSelector = config.inputSelector || 'textarea';
+      await page.click(inputSelector);
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Read image as base64 and paste via CDP
+      const imageBuffer = await fs.readFile(imagePath);
+      const base64Image = imageBuffer.toString('base64');
+      const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      
+      // Use CDP to paste image from clipboard
+      const client = await page.createCDPSession();
+      
+      // Set clipboard with image data
+      await page.evaluate(async (base64: string, mime: string) => {
+        const blob = await fetch(`data:${mime};base64,${base64}`).then(r => r.blob());
+        const item = new ClipboardItem({ [mime]: blob });
+        await navigator.clipboard.write([item]);
+      }, base64Image, mimeType);
+
+      // Trigger paste
+      await page.keyboard.down('Control');
+      await page.keyboard.press('KeyV');
+      await page.keyboard.up('Control');
+      
+      await client.detach();
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Check if image appeared (look for image preview)
+      const hasImage = await page.evaluate(() => {
+        return document.querySelector('img[src*="blob:"]') !== null ||
+               document.querySelector('[class*="preview"] img') !== null ||
+               document.querySelector('[class*="image-preview"]') !== null ||
+               document.querySelector('[class*="uploaded"]') !== null;
+      });
+      
+      if (hasImage) {
+        uploaded = true;
+        console.log('  📷 图片已通过粘贴上传');
+      }
+    } catch (pasteError) {
+      // Paste failed, try other methods
+    }
+
+    // Method 2: Direct file input (if exists)
+    if (!uploaded) {
+      const fileInputSelectors = [
+        'input[type="file"]',
+        '[data-testid="image-upload"]',
+        '[class*="upload"] input[type="file"]',
+        '[class*="attach"] input[type="file"]',
+      ];
+
+      for (const selector of fileInputSelectors) {
+        try {
+          const fileInput = await page.$(selector);
+          if (fileInput) {
+            const tagName = await fileInput.evaluate((el: Element) => el.tagName.toLowerCase());
+            if (tagName === 'input') {
+              await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
+              uploaded = true;
+              console.log('  📷 图片已上传');
+              break;
+            }
           }
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
       }
     }
 
-    // If no file input found, try clicking upload button first
+    // Method 3: Click + button, then select "图片" from popup menu
     if (!uploaded) {
-      // 元宝用 + 号按钮，豆包用图片按钮
-      const uploadButtonSelectors = [
-        // 元宝 + 号按钮
+      // 元宝用 + 号按钮，点击后有弹框选择"图片"
+      const plusButtonSelectors = [
         '[class*="plus"]',
         '[class*="add-btn"]',
         'button[class*="add"]',
         'svg[class*="plus"]',
         '[data-testid*="plus"]',
-        // 通用图片上传按钮
+        '[class*="more"]',
+      ];
+
+      for (const selector of plusButtonSelectors) {
+        try {
+          const btn = await page.$(selector);
+          if (!btn) continue;
+          
+          const isVisible = await btn.evaluate((el: Element) => {
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                   (el as HTMLElement).offsetWidth > 0;
+          });
+          if (!isVisible) continue;
+
+          await btn.click();
+          console.log(`  📎 点击 + 按钮`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Look for "图片" option in popup menu
+          const imageOptionSelectors = [
+            'text/图片',
+            '[class*="menu"] >> text/图片',
+            '[class*="popup"] >> text/图片',
+            '[class*="dropdown"] >> text/图片',
+            'div:has-text("图片")',
+            'span:has-text("图片")',
+            'button:has-text("图片")',
+            '[aria-label*="图片"]',
+          ];
+          
+          let foundImageOption = false;
+          for (const optSelector of imageOptionSelectors) {
+            try {
+              // Find element containing "图片" text
+              const imageOpt = await page.evaluateHandle(() => {
+                const elements = document.querySelectorAll('div, span, button, li, a');
+                for (const el of elements) {
+                  if (el.textContent?.includes('图片') && 
+                      (el as HTMLElement).offsetWidth > 0 &&
+                      window.getComputedStyle(el).display !== 'none') {
+                    return el;
+                  }
+                }
+                return null;
+              });
+              
+              if (imageOpt) {
+                await (imageOpt as import('puppeteer').ElementHandle<Element>).click();
+                console.log(`  📷 选择"图片"选项`);
+                foundImageOption = true;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                break;
+              }
+            } catch {
+              continue;
+            }
+          }
+          
+          if (foundImageOption) {
+            // Now look for file input
+            const fileInput = await page.$('input[type="file"]');
+            if (fileInput) {
+              await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
+              uploaded = true;
+              console.log('  📷 图片已上传');
+              break;
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // Method 4: Try other upload buttons directly
+    if (!uploaded) {
+      const uploadButtonSelectors = [
         'button[aria-label*="图片"]',
         'button[aria-label*="上传"]',
         'button[aria-label*="image"]',
@@ -614,7 +736,6 @@ export class WebAIService {
           const btn = await page.$(selector);
           if (!btn) continue;
           
-          // Check if visible
           const isVisible = await btn.evaluate((el: Element) => {
             const style = window.getComputedStyle(el);
             return style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -626,7 +747,6 @@ export class WebAIService {
           console.log(`  📎 点击上传按钮: ${selector}`);
           await new Promise(resolve => setTimeout(resolve, 1500));
           
-          // Now look for file input that may have appeared
           const fileInput = await page.$('input[type="file"]');
           if (fileInput) {
             await (fileInput as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
