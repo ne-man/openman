@@ -54,6 +54,8 @@ const DEFAULT_SELECTORS: Record<string, Partial<WebAIConfig>> = {
     submitSelector: 'button[class*="send"], button[type="submit"], [class*="submit"]',
     responseSelector: '[class*="message"], [class*="response"], [class*="answer"], [class*="content"]',
     responseTimeout: 60000,
+    // 元宝用 + 号按钮上传图片
+    imageUploadButton: '[class*="plus"], [class*="add"], button[aria-label*="+"], [class*="upload"]',
   },
 };
 
@@ -587,20 +589,42 @@ export class WebAIService {
 
     // If no file input found, try clicking upload button first
     if (!uploaded) {
+      // 元宝用 + 号按钮，豆包用图片按钮
       const uploadButtonSelectors = [
+        // 元宝 + 号按钮
+        '[class*="plus"]',
+        '[class*="add-btn"]',
+        'button[class*="add"]',
+        'svg[class*="plus"]',
+        '[data-testid*="plus"]',
+        // 通用图片上传按钮
         'button[aria-label*="图片"]',
         'button[aria-label*="上传"]',
         'button[aria-label*="image"]',
         'button[aria-label*="upload"]',
         '[class*="image-upload"]',
         '[class*="upload-btn"]',
+        '[class*="attach"]',
         '[data-testid*="upload"]',
+        '[data-testid*="attach"]',
       ];
 
       for (const selector of uploadButtonSelectors) {
         try {
-          await page.click(selector);
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          const btn = await page.$(selector);
+          if (!btn) continue;
+          
+          // Check if visible
+          const isVisible = await btn.evaluate((el: Element) => {
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                   (el as HTMLElement).offsetWidth > 0;
+          });
+          if (!isVisible) continue;
+
+          await btn.click();
+          console.log(`  📎 点击上传按钮: ${selector}`);
+          await new Promise(resolve => setTimeout(resolve, 1500));
           
           // Now look for file input that may have appeared
           const fileInput = await page.$('input[type="file"]');
