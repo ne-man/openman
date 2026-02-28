@@ -4,9 +4,9 @@
 # 用法: openman [command]
 # 命令:
 #   build  - 编译 TypeScript 代码
-#   run    - 运行 OpenMan
-#   web    - 启动 Web 服务并打开控制台
-#   debug  - 编译 + 运行 + 打开控制台
+#   run    - 启动 Web 服务
+#   web    - 打开浏览器控制台网页
+#   debug  - 编译 + 启动服务 + 打开控制台
 
 set -e
 
@@ -48,16 +48,16 @@ print_help() {
     echo ""
     echo "命令:"
     echo -e "  ${GREEN}build${NC}   编译 TypeScript 代码"
-    echo -e "  ${GREEN}run${NC}     运行 OpenMan CLI"
-    echo -e "  ${GREEN}web${NC}     启动 Web 服务并打开控制台"
-    echo -e "  ${GREEN}debug${NC}   编译 + 运行 Web 服务 + 打开控制台"
+    echo -e "  ${GREEN}run${NC}     启动 Web 服务"
+    echo -e "  ${GREEN}web${NC}     打开浏览器控制台网页"
+    echo -e "  ${GREEN}debug${NC}   编译 + 启动服务 + 打开控制台"
     echo -e "  ${GREEN}stop${NC}    停止运行中的服务"
     echo -e "  ${GREEN}status${NC}  查看服务状态"
     echo ""
     echo "示例:"
     echo "  openman build          # 编译项目"
-    echo "  openman run chat 你好  # 运行 CLI 并发送消息"
-    echo "  openman web            # 启动 Web 控制台"
+    echo "  openman run            # 启动 Web 服务"
+    echo "  openman web            # 打开浏览器控制台"
     echo "  openman debug          # 完整调试模式"
     echo ""
 }
@@ -290,11 +290,10 @@ main() {
             build_project
             ;;
         run)
-            shift
-            run_cli "$@"
+            start_web
             ;;
         web)
-            start_web_and_open
+            open_browser "$WEB_URL"
             ;;
         debug)
             debug_mode
@@ -307,6 +306,11 @@ main() {
             ;;
         help|--help|-h)
             print_help
+            ;;
+        cli)
+            # 直接运行 CLI 命令
+            shift
+            run_cli "$@"
             ;;
         *)
             if [ -n "${1:-}" ]; then
