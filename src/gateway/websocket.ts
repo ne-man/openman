@@ -54,8 +54,14 @@ export class WebSocketGateway extends EventEmitter {
       throw new Error('Gateway is already running');
     }
 
-    this.server = new WebSocketServer({ server: httpServer, port: this.port });
-    log.info(`WebSocket server starting on port ${this.port}`);
+    // 只使用一个选项：如果有 httpServer 则附加到它，否则使用独立端口
+    if (httpServer) {
+      this.server = new WebSocketServer({ server: httpServer });
+      log.info(`WebSocket server attached to HTTP server`);
+    } else {
+      this.server = new WebSocketServer({ port: this.port });
+      log.info(`WebSocket server starting on port ${this.port}`);
+    }
 
     this.server.on('connection', (ws: WebSocket, req) => {
       this.handleConnection(ws, req);

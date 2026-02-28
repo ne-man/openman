@@ -671,11 +671,11 @@ export class WebServer {
 
       this.server.listen(this.port, () => {
         log.info(`Web UI server listening on port ${this.port}`);
-        log.info(`WebSocket Gateway listening on port ${this.port + 1}`);
         log.debug(`Allowed CORS origins: ${CORS_ORIGINS.join(', ')}`);
 
-        // Start WebSocket gateway
-        this.gateway.attach(this.server!).then(() => {
+        // Start WebSocket gateway on separate port
+        this.gateway.attach().then(() => {
+          log.info(`WebSocket Gateway listening on port ${this.port + 1}`);
           resolve();
         }).catch(reject);
       });

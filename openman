@@ -37,6 +37,7 @@ NC='\033[0m' # No Color
 # 项目根目录
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_CLI="$PROJECT_DIR/dist/cli/index.js"
+SRC_CLI="$PROJECT_DIR/src/cli/index.ts"
 WEB_URL="http://localhost:3000"
 PORT=3000
 
@@ -116,9 +117,18 @@ get_port_pid() {
     lsof -Pi :$port -sTCP:LISTEN -t 2>/dev/null | head -1
 }
 
+# 检查 tsx 是否可用
+check_tsx() {
+    if ! command -v npx &> /dev/null; then
+        echo -e "${RED}错误: 未找到 npx${NC}"
+        exit 1
+    fi
+}
+
 # 启动 Web 服务
 start_web() {
     check_build
+    check_tsx
     
     # 检查端口
     if check_port $PORT; then
@@ -141,8 +151,8 @@ start_web() {
     echo -e "${CYAN}🌐 启动 Web 服务...${NC}"
     cd "$PROJECT_DIR"
     
-    # 后台启动服务
-    nohup node "$DIST_CLI" start > "$PROJECT_DIR/.openman.log" 2>&1 &
+    # 使用 tsx 运行 TypeScript（避免路径别名问题）
+    nohup npx tsx "$SRC_CLI" start > "$PROJECT_DIR/.openman.log" 2>&1 &
     local pid=$!
     echo $pid > "$PROJECT_DIR/.openman.pid"
     
