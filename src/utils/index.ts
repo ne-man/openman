@@ -2,6 +2,10 @@
  * Utility functions for OpenMan
  */
 
+// Re-export logger
+export { Logger, ModuleLogger, createLogger, logger, LOC, LOC_HERE, getCallerLocation } from './logger';
+export type { LogLevel, LogOptions, LoggerConfig } from './logger';
+
 /**
  * Format a date to a human-readable string
  */

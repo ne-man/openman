@@ -1,5 +1,6 @@
 /**
  * Enhanced Configuration Manager with Persistence
+ * Refactored to use async initialization pattern
  */
 
 import dotenv from 'dotenv';
@@ -8,8 +9,11 @@ import fsSync from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import type { OpenManConfig, AIProvider, WebAIConfig, AIServiceConfig } from '@/types';
+import { Logger } from '@/utils/logger';
 
 dotenv.config();
+
+const log = Logger.getInstance({ moduleName: 'CFG' }).createModuleLogger('CFG');
 
 const CONFIG_FILE = path.join(homedir(), '.openman', 'config.json');
 const WEBAI_FILE = path.join(homedir(), '.openman', 'webai.json');
@@ -19,11 +23,35 @@ export class ConfigManager {
   private persistedConfig: Partial<OpenManConfig> = {};
   private webAIs: WebAIConfig[] = [];
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this.config = this.loadConfig();
-    this.loadPersistedConfig();
-    this.loadWebAIsSync();
+    // Start async initialization but don't wait
+    this.initPromise = this.initialize();
+  }
+
+  /**
+   * Ensure initialization is complete before operations
+   */
+  public async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+  }
+
+  /**
+   * Async initialization
+   */
+  private async initialize(): Promise<void> {
+    log.debug('Initializing config manager...');
+    await Promise.all([
+      this.loadPersistedConfig(),
+      this.loadWebAIs(),
+    ]);
+    this.initialized = true;
+    log.info('Config manager initialized');
   }
 
   private loadConfig(): OpenManConfig {
@@ -101,9 +129,10 @@ export class ConfigManager {
       
       // Merge persisted config with default config
       this.config = this.mergeConfigs(this.config, this.persistedConfig);
-    } catch (error) {
+      log.debug('Loaded persisted config');
+    } catch {
       // File doesn't exist yet, that's ok
-      console.log('No persisted configuration found');
+      log.debug('No persisted configuration found, using defaults');
     }
   }
 
@@ -111,13 +140,13 @@ export class ConfigManager {
     const result = { ...base };
 
     for (const key in override) {
-      const overrideValue = (override as any)[key];
-      const baseValue = (base as any)[key];
+      const overrideValue = override[key as keyof OpenManConfig];
+      const baseValue = base[key as keyof OpenManConfig];
 
       if (typeof overrideValue === 'object' && overrideValue !== null && !Array.isArray(overrideValue)) {
-        result[key as keyof OpenManConfig] = { ...baseValue, ...overrideValue };
-      } else {
-        result[key as keyof OpenManConfig] = overrideValue as any;
+        (result as Record<string, unknown>)[key] = { ...(baseValue as object), ...(overrideValue as object) };
+      } else if (overrideValue !== undefined) {
+        (result as Record<string, unknown>)[key] = overrideValue;
       }
     }
 
@@ -134,7 +163,7 @@ export class ConfigManager {
   private parsePermission(value?: string): 'always' | 'ask' | 'never' | 'explicit' | undefined {
     const permissions = ['always', 'ask', 'never', 'explicit'];
     if (!value) return undefined;
-    return permissions.includes(value) ? (value as any) : undefined;
+    return permissions.includes(value) ? (value as 'always' | 'ask' | 'never' | 'explicit') : undefined;
   }
 
   /**
@@ -192,7 +221,7 @@ export class ConfigManager {
     action: string,
     permission: 'always' | 'ask' | 'never' | 'explicit'
   ): void {
-    (this.config.permissions[category] as any)[action] = permission;
+    (this.config.permissions[category] as Record<string, string>)[action] = permission;
   }
 
   /**
@@ -211,13 +240,14 @@ export class ConfigManager {
     };
 
     await fs.writeFile(CONFIG_FILE, JSON.stringify(configToSave, null, 2), 'utf-8');
-    console.log(`Configuration saved to ${CONFIG_FILE}`);
+    log.info(`Configuration saved to ${CONFIG_FILE}`);
   }
 
   /**
    * Reset configuration to defaults
    */
   public async reset(): Promise<void> {
+    log.info('Resetting configuration to defaults');
     this.config = this.loadConfig();
     await this.save();
   }
@@ -289,7 +319,7 @@ export class ConfigManager {
       }
 
       await this.save();
-    } catch (error) {
+    } catch {
       throw new Error('Invalid configuration data');
     }
   }
@@ -306,36 +336,22 @@ export class ConfigManager {
   // ============================================================================
 
   /**
-   * Load Web AI configurations from file (synchronous version for constructor)
-   */
-  private loadWebAIsSync(): void {
-    try {
-      if (fsSync.existsSync(WEBAI_FILE)) {
-        const content = fsSync.readFileSync(WEBAI_FILE, 'utf-8');
-        this.webAIs = JSON.parse(content);
-        
-        // Also merge into config
-        this.config.ai.webAI = this.webAIs;
-      }
-    } catch (error) {
-      // File doesn't exist or is invalid
-      this.webAIs = [];
-    }
-  }
-
-  /**
    * Load Web AI configurations from file
    */
   private async loadWebAIs(): Promise<void> {
     try {
-      const content = await fs.readFile(WEBAI_FILE, 'utf-8');
-      this.webAIs = JSON.parse(content);
-      
-      // Also merge into config
-      this.config.ai.webAI = this.webAIs;
-    } catch (error) {
-      // File doesn't exist yet
+      if (fsSync.existsSync(WEBAI_FILE)) {
+        const content = await fs.readFile(WEBAI_FILE, 'utf-8');
+        this.webAIs = JSON.parse(content);
+        
+        // Also merge into config
+        this.config.ai.webAI = this.webAIs;
+        log.debug(`Loaded ${this.webAIs.length} Web AI configs`);
+      }
+    } catch {
+      // File doesn't exist or is invalid
       this.webAIs = [];
+      log.debug('No Web AI configs found');
     }
   }
 
@@ -351,6 +367,7 @@ export class ConfigManager {
     this.webAIs.push(config);
     this.config.ai.webAI = this.webAIs;
     await this.saveWebAIs();
+    log.info(`Added Web AI: ${config.name}`);
   }
 
   /**
@@ -365,6 +382,7 @@ export class ConfigManager {
     this.webAIs[index] = { ...this.webAIs[index], ...config };
     this.config.ai.webAI = this.webAIs;
     await this.saveWebAIs();
+    log.info(`Updated Web AI: ${name}`);
   }
 
   /**
@@ -379,6 +397,7 @@ export class ConfigManager {
     this.webAIs.splice(index, 1);
     this.config.ai.webAI = this.webAIs;
     await this.saveWebAIs();
+    log.info(`Removed Web AI: ${name}`);
   }
 
   /**
@@ -412,5 +431,27 @@ export class ConfigManager {
   }
 }
 
-// Singleton instance
+// Singleton instance - initialize lazily
+let configInstance: ConfigManager | null = null;
+
+/**
+ * Get the config instance (creates if not exists)
+ */
+export function getConfig(): ConfigManager {
+  if (!configInstance) {
+    configInstance = new ConfigManager();
+  }
+  return configInstance;
+}
+
+/**
+ * Initialize config and wait for ready
+ */
+export async function initConfig(): Promise<ConfigManager> {
+  const instance = getConfig();
+  await instance.ensureInitialized();
+  return instance;
+}
+
+// Export for backward compatibility
 export const config = new ConfigManager();

@@ -14,6 +14,9 @@ import type {
 import { config } from '@/core/config';
 import { auditLogger } from '@/core/audit';
 import { webAIService } from '@/ai/webai';
+import { Logger } from '@/utils/logger';
+
+const log = Logger.getInstance({ moduleName: 'AI' }).createModuleLogger('AI');
 
 /**
  * Default Web AI configurations for fallback
@@ -61,12 +64,14 @@ export class AIService {
       this.openai = new OpenAI({
         apiKey: aiConfig.openai.apiKey,
       });
+      log.info('OpenAI provider initialized');
     }
 
     if (aiConfig.anthropic?.apiKey) {
       this.anthropic = new Anthropic({
         apiKey: aiConfig.anthropic.apiKey,
       });
+      log.info('Anthropic provider initialized');
     }
   }
 
@@ -88,6 +93,7 @@ export class AIService {
     }
 
     this.webAIInitialized = true;
+    log.debug('Web AI fallback initialized');
   }
 
   /**
@@ -117,13 +123,15 @@ export class AIService {
     if (!this.isProviderAvailable(targetProvider)) {
       if (this.hasAPIProvider()) {
         targetProvider = this.getBestProvider();
-        console.log(`Provider ${provider} not available, falling back to ${targetProvider}`);
+        log.info(`Provider ${provider} not available, falling back to ${targetProvider}`);
       } else {
         // No API configured, use Web AI
         targetProvider = 'webai';
-        console.log('No API configured, using Web AI');
+        log.info('No API configured, using Web AI');
       }
     }
+
+    log.debug(`Sending completion request to ${targetProvider}`);
 
     await auditLogger.log({
       timestamp: new Date(),

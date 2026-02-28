@@ -17,8 +17,55 @@ import { memorySystem } from '@/core/memory';
 import { sessionManager } from '@/core/session';
 import type { Session } from '@/core/session';
 import type { MemoryQuery } from '@/core/memory';
+import type { AIProvider } from '@/types';
+import { Logger } from '@/utils/logger';
+
+// Initialize logger first
+const logger = Logger.getInstance({ moduleName: 'CLI' });
+const log = logger.createModuleLogger('CLI');
+
+// Log startup - location is auto-captured
+log.info('OpenMan CLI starting...');
 
 const program = new Command();
+
+// ============================================================================
+// Type Safety Helpers
+// ============================================================================
+
+function parseProvider(value: string | undefined): AIProvider | undefined {
+  if (!value || value === 'auto') return undefined;
+  const validProviders: AIProvider[] = ['openai', 'anthropic', 'google', 'custom', 'webai'];
+  return validProviders.includes(value as AIProvider) ? (value as AIProvider) : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Unknown error occurred';
+}
+
+function parseMemoryType(value: string | undefined): 'episodic' | 'semantic' | 'preference' | undefined {
+  const validTypes = ['episodic', 'semantic', 'preference'];
+  return value && validTypes.includes(value) ? (value as 'episodic' | 'semantic' | 'preference') : undefined;
+}
+
+function parseExportFormat(value: string): 'json' | 'txt' {
+  return value === 'txt' ? 'txt' : 'json';
+}
+
+type PermissionCategory = 'web' | 'local' | 'ai';
+type PermissionLevel = 'always' | 'ask' | 'never' | 'explicit';
+
+function parsePermissionCategory(value: string): PermissionCategory | null {
+  const validCategories: PermissionCategory[] = ['web', 'local', 'ai'];
+  return validCategories.includes(value as PermissionCategory) ? (value as PermissionCategory) : null;
+}
+
+function parsePermissionLevel(value: string): PermissionLevel | null {
+  const validLevels: PermissionLevel[] = ['always', 'ask', 'never', 'explicit'];
+  return validLevels.includes(value as PermissionLevel) ? (value as PermissionLevel) : null;
+}
 
 program
   .name('openman')
@@ -37,11 +84,13 @@ program
   .option('-w, --webai <name>', 'use specific Web AI by name')
   .action(async (message, options) => {
     const spinner = ora('Initializing OpenMan...').start();
+    log.info('Chat command invoked');
 
     try {
       // Show provider status
       const bestProvider = aiService.getBestProvider();
       const hasAPI = aiService.hasAPIProvider();
+      log.debug(`Provider status: best=${bestProvider}, hasAPI=${hasAPI}`);
 
       if (options.verbose) {
         spinner.info(chalk.gray(`API configured: ${hasAPI ? 'Yes' : 'No'}`));
@@ -49,12 +98,9 @@ program
       }
 
       // Determine provider
-      let provider = options.provider;
-      if (!provider || provider === 'auto') {
-        provider = bestProvider;
-        if (!hasAPI) {
-          spinner.info(chalk.yellow('No API key configured, using Web AI (browser-based)'));
-        }
+      const provider = parseProvider(options.provider) ?? bestProvider;
+      if (!options.provider && !hasAPI) {
+        spinner.info(chalk.yellow('No API key configured, using Web AI (browser-based)'));
       }
 
       const input = message ? message.join(' ') : await getUserInput();
@@ -71,7 +117,7 @@ program
           role: 'user',
           content: input,
         },
-      ], provider as any);
+      ], provider);
 
       spinner.stop();
       console.log(chalk.green('💬 OpenMan: ' + response.content));
@@ -83,9 +129,10 @@ program
       if (response.provider === 'webai') {
         await aiService.closeWebAI();
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
-      if (error.message.includes('Web AI')) {
+    } catch (error) {
+      const errorMsg = getErrorMessage(error);
+      spinner.fail(chalk.red('Error: ' + errorMsg));
+      if (errorMsg.includes('Web AI')) {
         console.log(chalk.yellow('\nTip: Add a Web AI with: openman webai add <name> <url>'));
         console.log(chalk.yellow('Example: openman webai add doubao https://www.doubao.com/chat/'));
       }
@@ -105,6 +152,9 @@ program
   .action(async (description: string[], options: { device?: string; verbose?: boolean }) => {
     const taskDescription = description.join(' ');
     const spinner = ora('Initializing task...').start();
+    
+    log.info(`Task command: "${taskDescription}"`);
+    log.debug(`Options: device=${options.device}, verbose=${options.verbose}`);
 
     try {
       const { DeviceTools } = await import('@/tools/device');
@@ -140,12 +190,15 @@ program
       spinner.start('📸 Capturing screen...');
       const screenshotResult = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
       
-      if (!screenshotResult.success || !screenshotResult.data?.path) {
+      interface ScreenshotData { path?: string; filename?: string; size?: number; device?: string; deviceId?: string; }
+      const screenshotData = screenshotResult.data as ScreenshotData | undefined;
+      
+      if (!screenshotResult.success || !screenshotData?.path) {
         spinner.fail(chalk.red('Failed to capture screenshot'));
         process.exit(1);
       }
 
-      const screenshotPath = screenshotResult.data.path;
+      const screenshotPath = screenshotData.path;
       spinner.succeed(chalk.green('Screenshot captured'));
 
       // Step 3: Analyze screen with AI
@@ -191,15 +244,43 @@ action: tap/input/wait/back(返回键)`;
       spinner.succeed(chalk.green('Analysis complete'));
 
       // Parse AI response to extract JSON
-      let taskPlan: any = null;
+      interface TaskStep {
+        action: 'tap' | 'input' | 'wait' | 'back' | 'swipe';
+        target?: string;
+        position?: string;
+        text?: string;
+        x?: number;
+        y?: number;
+        startX?: number;
+        startY?: number;
+        endX?: number;
+        endY?: number;
+        seconds?: number;
+      }
+
+      interface TaskPlan {
+        current_screen: string;
+        steps: TaskStep[];
+        expected_result: string;
+      }
+
+      let taskPlan: TaskPlan | null = null;
       try {
-        // Try to extract JSON from response
-        const jsonMatch = analysis.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          taskPlan = JSON.parse(jsonMatch[0]);
+        // Try to extract JSON from response - look for JSON code blocks first
+        const codeBlockMatch = analysis.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+        if (codeBlockMatch) {
+          taskPlan = JSON.parse(codeBlockMatch[1]);
+        } else {
+          // Fallback: find raw JSON object
+          const jsonMatch = analysis.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            taskPlan = JSON.parse(jsonMatch[0]);
+          }
         }
       } catch (e) {
-        // JSON parsing failed, show raw analysis
+        // JSON parsing failed
+        console.log(chalk.yellow('\n⚠️ JSON parsing failed'));
+        console.log(chalk.gray('Raw response preview: ' + analysis.substring(0, 500)));
       }
 
       // Display analysis
@@ -211,7 +292,7 @@ action: tap/input/wait/back(返回键)`;
       if (taskPlan) {
         console.log(chalk.white(`📱 Current Screen: ${taskPlan.current_screen}`));
         console.log(chalk.white(`\n📝 Steps to execute:`));
-        taskPlan.steps?.forEach((step: any, i: number) => {
+        taskPlan.steps?.forEach((step: TaskStep, i: number) => {
           const desc = step.action === 'input' 
             ? `${step.action}: "${step.text}"`
             : `${step.action}: ${step.target} (${step.x}%, ${step.y}%)`;
@@ -224,11 +305,13 @@ action: tap/input/wait/back(返回键)`;
       console.log(chalk.cyan('\n' + '='.repeat(60)));
 
       // Auto-execute if we have parsed steps
-      if (taskPlan?.steps?.length > 0) {
+      if (taskPlan && taskPlan.steps && taskPlan.steps.length > 0) {
         // Get device screen size for coordinate conversion
         const screenInfo = await deviceTools.getScreenInfo(targetDevice.id);
-        const screenWidth = screenInfo.data?.width || 1080;
-        const screenHeight = screenInfo.data?.height || 2340;
+        interface ScreenData { width?: number; height?: number; resolution?: string; }
+        const screenData = screenInfo.data as ScreenData | undefined;
+        const screenWidth = screenData?.width || 1080;
+        const screenHeight = screenData?.height || 2340;
 
         console.log(chalk.cyan('\n🚀 Auto-executing steps...\n'));
 
@@ -293,10 +376,10 @@ action: tap/input/wait/back(返回键)`;
               spinner.succeed(chalk.green(`Step ${stepNum}: Back`));
               
             } else if (step.action === 'swipe') {
-              const startX = Math.round((step.startX / 100) * screenWidth);
-              const startY = Math.round((step.startY / 100) * screenHeight);
-              const endX = Math.round((step.endX / 100) * screenWidth);
-              const endY = Math.round((step.endY / 100) * screenHeight);
+              const startX = Math.round(((step.startX ?? 0) / 100) * screenWidth);
+              const startY = Math.round(((step.startY ?? 0) / 100) * screenHeight);
+              const endX = Math.round(((step.endX ?? 0) / 100) * screenWidth);
+              const endY = Math.round(((step.endY ?? 0) / 100) * screenHeight);
               await deviceTools.swipe(targetDevice.id, startX, startY, endX, endY);
               spinner.succeed(chalk.green(`Step ${stepNum}: Swiped`));
             }
@@ -304,8 +387,8 @@ action: tap/input/wait/back(返回键)`;
             // Wait between steps
             await new Promise(resolve => setTimeout(resolve, 1500));
 
-          } catch (err: any) {
-            spinner.fail(chalk.red(`Step ${stepNum} failed: ${err.message}`));
+          } catch (err) {
+            spinner.fail(chalk.red(`Step ${stepNum} failed: ${getErrorMessage(err)}`));
           }
         }
 
@@ -316,14 +399,15 @@ action: tap/input/wait/back(返回键)`;
         spinner.succeed(chalk.green('Verification screenshot captured'));
 
         // Analyze result
-        if (verifyScreenshot.data?.path) {
+        const verifyData = verifyScreenshot.data as ScreenshotData | undefined;
+        if (verifyData?.path) {
           spinner.start('🤖 Verifying result...');
           const verifyPrompt = `任务: ${taskDescription}
 预期结果: ${taskPlan.expected_result}
 
 请分析这张执行后的截图，判断任务是否成功完成，简要说明当前界面状态。`;
           
-          const verification = await webAIService.queryWithImage(webAI.name, verifyScreenshot.data.path, verifyPrompt);
+          const verification = await webAIService.queryWithImage(webAI.name, verifyData.path, verifyPrompt);
           spinner.succeed(chalk.green('Verification complete'));
           
           console.log(chalk.cyan('\n' + '='.repeat(60)));
@@ -354,16 +438,16 @@ action: tap/input/wait/back(返回键)`;
             const response = await webAIService.followUp(userInput);
             spinner.succeed(chalk.green('Response received'));
             console.log(chalk.green('\n🤖 AI: ') + response + '\n');
-          } catch (error: any) {
-            spinner.fail(chalk.red('Error: ' + error.message));
+          } catch (error) {
+            spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
           }
         }
       }
 
       await webAIService.close();
 
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       if (options.verbose) {
         console.error(error);
       }
@@ -443,8 +527,8 @@ program
       }
 
       await browser.close();
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -473,8 +557,8 @@ program
       }
 
       await browser.close();
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -500,8 +584,8 @@ program
           console.log(chalk.white(`    ${index + 1}. ${subtask.description}`));
         });
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -528,8 +612,8 @@ program
       if (executedTask.result) {
         console.log(chalk.white(`  Result: ${executedTask.result}`));
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -565,8 +649,8 @@ memoryCmd
       if (tags && tags.length > 0) {
         console.log(chalk.white(`Tags: ${tags.join(', ')}`));
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -583,10 +667,10 @@ memoryCmd
     try {
       let memories;
       if (options.recent) {
-        memories = memorySystem.getRecentMemories(parseInt(options.limit), options.type);
+        memories = memorySystem.getRecentMemories(parseInt(options.limit), parseMemoryType(options.type));
       } else {
         memories = await memorySystem.queryMemories({
-          type: options.type as any,
+          type: parseMemoryType(options.type),
           limit: parseInt(options.limit),
         });
       }
@@ -604,8 +688,8 @@ memoryCmd
       console.log(chalk.cyan(`\n📊 Statistics:`));
       console.log(chalk.white(`  Total: ${stats.total}`));
       console.log(chalk.white(`  Average Importance: ${stats.averageImportance.toFixed(2)}`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -627,8 +711,8 @@ memoryCmd
         console.log(chalk.white(`\n  ${index + 1}. [${memory.type}] ${formatDate(memory.timestamp)}`));
         console.log(chalk.white(`     ${memory.content.substring(0, 150)}...`));
       });
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -660,8 +744,8 @@ memoryCmd
     try {
       const exportPath = await memorySystem.exportMemories(file);
       spinner.succeed(chalk.green(`Exported to ${exportPath}`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -681,15 +765,16 @@ sessionCmd
     const spinner = ora('Creating session...').start();
 
     try {
-      const session = await sessionManager.createSession(name, options.provider as any, options.model);
+      const provider = parseProvider(options.provider) ?? 'openai';
+      const session = await sessionManager.createSession(name, provider, options.model);
 
       spinner.succeed(chalk.green('Session created'));
       console.log(chalk.cyan(`\nSession ID: ${session.id}`));
       console.log(chalk.white(`Name: ${session.name}`));
       console.log(chalk.white(`Provider: ${session.provider}`));
       console.log(chalk.white(`Model: ${session.model}`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -746,8 +831,8 @@ sessionCmd
         spinner.fail(chalk.red('Session not found'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -760,7 +845,8 @@ sessionCmd
     const spinner = ora('Exporting session...').start();
 
     try {
-      const content = await sessionManager.exportSession(id, options.format as any);
+      const format = parseExportFormat(options.format);
+      const content = await sessionManager.exportSession(id, format);
 
       if (content) {
         if (file) {
@@ -775,8 +861,8 @@ sessionCmd
         spinner.fail(chalk.red('Session not found'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -881,8 +967,8 @@ configCmd
     try {
       await config.save();
       spinner.succeed(chalk.green(`Configuration saved to ${config.getConfigPath()}`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -961,10 +1047,18 @@ permCmd
       process.exit(1);
     }
 
+    const parsedCategory = parsePermissionCategory(category);
+    const parsedPermission = parsePermissionLevel(permission);
+
+    if (!parsedCategory || !parsedPermission) {
+      console.log(chalk.red('\n✗ Invalid category or permission'));
+      process.exit(1);
+    }
+
     permissionManager.setPermission(
-      category as any,
+      parsedCategory,
       action,
-      permission as any
+      parsedPermission
     );
 
     console.log(chalk.green(`\n✓ Set ${category}.${action} to ${permission}`));
@@ -1004,7 +1098,7 @@ program
     const displayLogs = logs.slice(-limit);
 
     console.log(chalk.cyan(`\n📝 Audit Logs (showing last ${displayLogs.length}):`));
-    displayLogs.forEach((log: any) => {
+    displayLogs.forEach((log) => {
       const status = log.result === 'success' ? '✓' : '✗';
       const color = log.result === 'success' ? 'green' : 'red';
       console.log(chalk[color](`\n  ${status} ${formatDate(new Date(log.timestamp))}`));
@@ -1043,8 +1137,8 @@ webaiCmd
 
       spinner.succeed(chalk.green(`Web AI "${name}" added`));
       console.log(chalk.gray(`  URL: ${url}`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1085,8 +1179,8 @@ webaiCmd
     try {
       await config.removeWebAI(name);
       spinner.succeed(chalk.green(`Web AI "${name}" removed`));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1141,8 +1235,8 @@ webaiCmd
       console.log(chalk.white(response));
 
       await webAIService.close();
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1192,8 +1286,8 @@ webaiCmd
 
       await browser.close();
       console.log(chalk.green('\n✓ Session saved! You can now use: openman webai chat ' + name + ' "message"'));
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1217,7 +1311,7 @@ async function getUserInput(): Promise<string> {
   });
 }
 
-async function question(rl: any, query: string): Promise<string> {
+async function question(rl: { question: (query: string, callback: (answer: string) => void) => void }, query: string): Promise<string> {
   return new Promise((resolve) => {
     rl.question(query, (answer: string) => {
       resolve(answer);
@@ -1266,8 +1360,8 @@ deviceCmd
         console.log(chalk.gray(`     Android: ${device.androidVersion}`));
         console.log(chalk.gray(`     Status: ${device.status}`));
       });
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1298,8 +1392,8 @@ deviceCmd
         spinner.fail(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1328,8 +1422,8 @@ deviceCmd
         console.log(chalk.red('\n✗ ' + (result.error || 'Unknown error')));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1351,8 +1445,8 @@ deviceCmd
         spinner.fail(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1374,8 +1468,8 @@ deviceCmd
         spinner.fail(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1397,8 +1491,8 @@ deviceCmd
         spinner.fail(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1489,8 +1583,8 @@ program
 
         await webAIService.close();
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
@@ -1565,8 +1659,8 @@ program
                 console.log(chalk.white(`  ${i + 1}. ${s}`));
               });
             }
-          } catch (error: any) {
-            analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
+          } catch (error) {
+            analyzeSpinner.fail(chalk.red('Analysis failed: ' + getErrorMessage(error)));
           }
         } else if (provider === 'webai') {
           const analyzeSpinner = ora('Analyzing screenshot with Web AI...').start();
@@ -1596,13 +1690,13 @@ program
             console.log(chalk.white(`\n${analysis}`));
 
             await webAIService.close();
-          } catch (error: any) {
-            analyzeSpinner.fail(chalk.red('Analysis failed: ' + error.message));
+          } catch (error) {
+            analyzeSpinner.fail(chalk.red('Analysis failed: ' + getErrorMessage(error)));
           }
         }
       }
-    } catch (error: any) {
-      spinner.fail(chalk.red('Error: ' + error.message));
+    } catch (error) {
+      spinner.fail(chalk.red('Error: ' + getErrorMessage(error)));
       process.exit(1);
     }
   });
