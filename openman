@@ -10,6 +10,22 @@
 
 set -e
 
+# 加载 nvm 环境（如果存在）
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+# 或者加载 fnm 环境（如果存在）
+if [ -d "$HOME/.fnm" ]; then
+    export PATH="$HOME/.fnm:$PATH"
+    eval "$(fnm env --shell bash 2>/dev/null)" || true
+fi
+
+# 加载用户环境配置
+if [ -f "$HOME/.bashrc" ]; then
+    source "$HOME/.bashrc" 2>/dev/null || true
+fi
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
