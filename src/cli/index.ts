@@ -2247,6 +2247,60 @@ toolCmd
   });
 
 // ============================================================================
+// Douyin Commands - Automated TikTok/Douyin browsing
+// ============================================================================
+
+program
+  .command('douyin')
+  .description('Automated Douyin/TikTok browsing (OpenMan as a human viewer)')
+  .option('-c, --count <number>', 'number of videos to watch', '10')
+  .option('-d, --delay <ms>', 'delay between videos (ms)', '3000')
+  .option('-l, --like', 'auto-like videos randomly')
+  .option('-m, --comment', 'auto-comment randomly')
+  .option('--no-headless', 'show browser window')
+  .option('--device <type>', 'device type (mobile, desktop)', 'mobile')
+  .action(async (options) => {
+    const spinner = ora('Initializing Douyin browser...').start();
+
+    try {
+      const { DouyinBrowser } = await import('@/browser/douyin');
+
+      const browser = new DouyinBrowser({
+        headless: options.headless !== false,
+        scrollCount: parseInt(options.count) || 10,
+        scrollDelay: parseInt(options.delay) || 3000,
+        autoLike: options.like || false,
+        autoComment: options.comment || false,
+        device: options.device || 'mobile',
+      });
+
+      spinner.succeed(chalk.green('Browser initialized'));
+
+      console.log(chalk.cyan('\n🎭 OpenMan 开始刷抖音...'));
+      console.log(chalk.gray(`📱 设备: ${options.device}`));
+      console.log(chalk.gray(`📊 计划观看: ${options.count} 个视频`));
+      console.log(chalk.gray(`⏱️  每个视频: ${options.delay}ms`));
+      if (options.like) console.log(chalk.gray(`💖 自动点赞: 开启`));
+      if (options.comment) console.log(chalk.gray(`💬 自动评论: 开启`));
+      console.log('')
+
+      await browser.initialize();
+      await browser.open();
+
+      const stats = await browser.browse();
+
+      await browser.close();
+
+      console.log(chalk.cyan('\n✅ OpenMan 刷抖音完成！'));
+      console.log(chalk.gray('OpenMan 像人类一样浏览了抖音 😄'));
+
+    } catch (error: any) {
+      spinner.fail(chalk.red('Error: ' + error.message));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
 // Main
 // ============================================================================
 

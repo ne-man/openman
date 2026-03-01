@@ -526,10 +526,72 @@ export class WebAIService {
    * Send a simple query to a Web AI
    */
   public async query(configName: string, query: string): Promise<string> {
+    // Check if query is about "刷抖音" (browsing Douyin)
+    const douyinMatch = query.match(/刷.*抖音|浏览.*抖音|douyin|tiktok|刷.*视频|看.*抖音|帮我.*抖音/i);
+
+    if (douyinMatch) {
+      return await this.handleDouyinQuery(query, configName);
+    }
+
     const response = await this.chat(configName, [
       { role: 'user', content: query, timestamp: new Date() },
     ]);
     return response.content;
+  }
+
+  /**
+   * Handle Douyin/TikTok browsing queries
+   */
+  private async handleDouyinQuery(query: string, aiConfigName: string): Promise<string> {
+    console.log(chalk.cyan('\n🎭 检测到抖音浏览指令'));
+
+    try {
+      const { USBDeviceDouyin } = await import('@/browser/usb-douyin');
+
+      // Parse query to extract parameters
+      const countMatch = query.match(/(\d+)\s*(个|条|视频)/i);
+      const count = countMatch ? parseInt(countMatch[1]) : 10;
+
+      const aiMatch = query.match(/分析|ai|智能/i);
+      const likeMatch = query.match(/点赞|喜欢/i);
+      const commentMatch = query.match(/评论/i);
+      const collectMatch = query.match(/收藏|保存/i);
+
+      const config = {
+        deviceId: '',
+        watchDuration: { min: 3, max: 15 },
+        autoLike: !!likeMatch,
+        autoCollect: !!collectMatch,
+        autoComment: !!commentMatch,
+        likeProbability: 0.4,
+        commentProbability: 0.1,
+        collectProbability: 0.2,
+        watchUntilEnd: true,
+        analyzeWithAI: !!aiMatch,
+        webAIName: aiConfigName,
+      };
+
+      console.log(chalk.gray(`📊 配置: ${count} 个视频, 点赞: ${config.autoLike}, 评论: ${config.autoComment}, 收藏: ${config.autoCollect}, AI分析: ${config.analyzeWithAI}`));
+
+      const controller = new USBDeviceDouyin(config);
+      await controller.openDouyin();
+
+      const stats = await controller.browse(count, config);
+
+      await controller.close();
+
+      return `✅ 已完成浏览抖音 ${count} 个视频！\n\n` +
+             `📊 统计:\n` +
+             `- 观看: ${stats.videosWatched} 个\n` +
+             `- 点赞: ${stats.videosLiked} 个\n` +
+             `- 收藏: ${stats.videosCollected} 个\n` +
+             `- 评论: ${stats.videosCommented} 条\n` +
+             `- 总时长: ${stats.totalWatchTime} 秒\n` +
+             `- 平均: ${(stats.totalWatchTime / stats.videosWatched).toFixed(1)} 秒/视频`;
+    } catch (error: any) {
+      console.error(chalk.red('❌ 抖音浏览失败:'), error.message);
+      return `❌ 抖音浏览失败: ${error.message}\n\n请确保:\n1. USB 设备已连接并启用 USB 调试\n2. 抖音 App 已打开\n3. 设备已授权 ADB 访问`;
+    }
   }
 
   /**
@@ -684,7 +746,7 @@ export class WebAIService {
       // 备用：获取页面上最长的文本块
       const allTexts = document.querySelectorAll('div, p, span');
       let longestText = '';
-      for (const el of allTexts) {
+      for (const el of Array.from(allTexts)) {
         const text = el.textContent?.trim() || '';
         if (text.length > longestText.length && text.length < 10000) {
           longestText = text;
@@ -720,7 +782,7 @@ export class WebAIService {
       // 检查是否有"正在输入"指示器
       const isTyping = await page.evaluate(() => {
         const indicators = document.querySelectorAll('[class*="typing"], [class*="loading"], [class*="generating"], [class*="thinking"]');
-        for (const ind of indicators) {
+        for (const ind of Array.from(indicators)) {
           const style = window.getComputedStyle(ind);
           if (style.display !== 'none' && style.visibility !== 'hidden') {
             return true;

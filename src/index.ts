@@ -3,6 +3,8 @@
  */
 
 export { BrowserEngine } from '@/browser/engine';
+export { DouyinBrowser } from '@/browser/douyin';
+export { USBDeviceDouyin } from '@/browser/usb-douyin';
 export { aiService } from '@/ai/service';
 export { localTools } from '@/tools/local';
 export { reasoningEngine } from '@/core/reasoning';
