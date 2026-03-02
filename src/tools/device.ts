@@ -9,8 +9,10 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { homedir } from 'os';
 import type { ToolResult } from '@/types';
+import { Logger } from '@/utils/logger';
 
 const execAsync = promisify(exec);
+const log = Logger.getInstance({ moduleName: 'DEV' }).createModuleLogger('DEV');
 
 export interface DeviceInfo {
   id: string;
@@ -33,6 +35,7 @@ export class DeviceTools {
     // Try to find adb in common locations
     this.adbPath = this.findAdb();
     this.defaultOutputDir = path.join(homedir(), '.openman', 'screenshots');
+    log.debug(`ADB path: ${this.adbPath}`);
   }
 
   private findAdb(): string {
@@ -97,12 +100,15 @@ export class DeviceTools {
             }
 
             devices.push({ id, model, androidVersion, status });
+            log.debug(`Found device: ${model} (${id})`);
           }
         }
       }
 
+      log.info(`Found ${devices.length} connected devices`);
       return devices;
     } catch (error) {
+      log.error(`Failed to list devices: ${(error as Error).message}`);
       throw new Error(`Failed to list devices: ${(error as Error).message}`);
     }
   }
@@ -114,6 +120,7 @@ export class DeviceTools {
     const devices = await this.listDevices();
 
     if (devices.length === 0) {
+      log.warn('No devices connected');
       return {
         success: false,
         error: 'No devices connected. Please connect a device via USB.',
@@ -125,6 +132,7 @@ export class DeviceTools {
       : devices[0];
 
     if (!device) {
+      log.warn(`Device ${options.deviceId} not found`);
       return {
         success: false,
         error: `Device ${options.deviceId} not found`,
@@ -141,6 +149,8 @@ export class DeviceTools {
     const devicePath = '/sdcard/screenshot.png';
 
     try {
+      log.debug(`Taking screenshot from ${device.model} (${device.id})`);
+      
       // Take screenshot on device
       await execAsync(
         `${this.adbPath} -s ${device.id} shell screencap -p ${devicePath}`
@@ -171,7 +181,9 @@ export class DeviceTools {
           timestamp: new Date(),
         },
       };
+      log.info(`Screenshot saved: ${localPath} (${stats.size} bytes)`);
     } catch (error) {
+      log.error(`Screenshot failed: ${(error as Error).message}`);
       return {
         success: false,
         error: `Screenshot failed: ${(error as Error).message}`,

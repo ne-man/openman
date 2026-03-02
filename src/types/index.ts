@@ -159,6 +159,39 @@ export interface AuditLog {
 }
 
 // ============================================================================
+// API Request/Response Types
+// ============================================================================
+
+export interface ChatRequest {
+  messages: AIMessage[];
+  provider?: AIProvider;
+  stream?: boolean;
+}
+
+export interface CreateSessionRequest {
+  name: string;
+  provider?: AIProvider;
+  model?: string;
+}
+
+export interface AddMessageRequest {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface AddMemoryRequest {
+  content: string;
+  type: 'episodic' | 'semantic' | 'preference';
+  importance?: number;
+  tags?: string[];
+}
+
+export interface APIError {
+  error: string;
+  timestamp: string;
+}
+
+// ============================================================================
 // Config Types
 // ============================================================================
 

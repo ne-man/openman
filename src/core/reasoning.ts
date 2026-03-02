@@ -146,11 +146,11 @@ Execute the given task and provide a helpful response.`,
       // Try to extract JSON from the response
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
+        const parsed = JSON.parse(jsonMatch[0]) as { subtasks?: Array<{ description?: string }> };
         if (parsed.subtasks && Array.isArray(parsed.subtasks)) {
-          return parsed.subtasks.map((st: any, index: number) => ({
+          return parsed.subtasks.map((st, index: number) => ({
             id: `subtask-${Date.now()}-${index}`,
-            description: st.description,
+            description: st.description || 'Untitled subtask',
             status: 'pending' as const,
             createdAt: new Date(),
           }));

@@ -5,9 +5,12 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { EventEmitter } from 'events';
-import type { Server } from 'http';
+import type { Server, IncomingMessage } from 'http';
 import { auditLogger } from '@/core/audit';
 import { generateId } from '@/utils';
+import { Logger } from '@/utils/logger';
+
+const log = Logger.getInstance({ moduleName: 'WS' }).createModuleLogger('WS');
 
 export interface GatewayClient {
   id: string;
@@ -51,15 +54,22 @@ export class WebSocketGateway extends EventEmitter {
       throw new Error('Gateway is already running');
     }
 
-    this.server = new WebSocketServer({ server: httpServer, port: this.port });
+    // 只使用一个选项：如果有 httpServer 则附加到它，否则使用独立端口
+    if (httpServer) {
+      this.server = new WebSocketServer({ server: httpServer });
+      log.info(`WebSocket server attached to HTTP server`);
+    } else {
+      this.server = new WebSocketServer({ port: this.port });
+      log.info(`WebSocket server starting on port ${this.port}`);
+    }
 
     this.server.on('connection', (ws: WebSocket, req) => {
       this.handleConnection(ws, req);
     });
 
     this.server.on('error', (error) => {
+      log.error(`WebSocket server error: ${error.message}`);
       this.emit('error', error);
-      console.error('WebSocket Gateway error:', error);
     });
 
     await auditLogger.log({
@@ -70,7 +80,7 @@ export class WebSocketGateway extends EventEmitter {
       riskLevel: 'low',
     });
 
-    console.log(`WebSocket Gateway listening on port ${this.port}`);
+    log.info(`WebSocket Gateway listening on port ${this.port}`);
   }
 
   /**
@@ -81,12 +91,14 @@ export class WebSocketGateway extends EventEmitter {
       return;
     }
 
+    log.info('Closing WebSocket gateway...');
+
     // Close all client connections
     for (const [clientId, client] of this.clients) {
       try {
         client.ws.close(1000, 'Server shutting down');
       } catch (error) {
-        console.error(`Error closing client ${clientId}:`, error);
+        log.warn(`Error closing client ${clientId}`);
       }
     }
 
@@ -117,14 +129,15 @@ export class WebSocketGateway extends EventEmitter {
   /**
    * Handle new client connection
    */
-  private async handleConnection(ws: WebSocket, req: any): Promise<void> {
+  private async handleConnection(ws: WebSocket, req: IncomingMessage): Promise<void> {
     const clientId = generateId('client-');
-    const clientType = req.headers['x-client-type'] as string || 'web';
+    const rawClientType = req.headers['x-client-type'];
+    const clientType = (typeof rawClientType === 'string' ? rawClientType : 'web') as GatewayClient['type'];
     const clientMetadata = this.parseClientMetadata(req);
 
     const client: GatewayClient = {
       id: clientId,
-      type: clientType as any,
+      type: clientType,
       ws,
       metadata: clientMetadata,
       connectedAt: new Date(),
@@ -132,6 +145,7 @@ export class WebSocketGateway extends EventEmitter {
     };
 
     this.clients.set(clientId, client);
+    log.info(`Client connected: ${clientId} (type=${clientType})`);
 
     // Setup message handler
     ws.on('message', (data: Buffer) => {
@@ -145,7 +159,7 @@ export class WebSocketGateway extends EventEmitter {
 
     // Setup error handler
     ws.on('error', (error) => {
-      console.error(`Client ${clientId} error:`, error);
+      log.error(`Client ${clientId} error: ${error.message}`);
     });
 
     // Send welcome message
@@ -387,7 +401,7 @@ export class WebSocketGateway extends EventEmitter {
   /**
    * Parse client metadata from request
    */
-  private parseClientMetadata(req: any): Record<string, unknown> {
+  private parseClientMetadata(req: IncomingMessage): Record<string, unknown> {
     const metadata: Record<string, unknown> = {};
 
     // Extract headers as metadata

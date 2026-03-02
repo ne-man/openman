@@ -12,6 +12,26 @@ import { auditLogger } from '@/core/audit';
 
 const execAsync = promisify(exec);
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'Unknown error occurred';
+}
+
+function getErrorStdout(error: unknown): string {
+  if (error && typeof error === 'object' && 'stdout' in error) {
+    return String((error as { stdout?: string }).stdout ?? '').trim();
+  }
+  return '';
+}
+
+function getErrorStderr(error: unknown): string {
+  if (error && typeof error === 'object' && 'stderr' in error) {
+    return String((error as { stderr?: string }).stderr ?? '').trim();
+  }
+  return '';
+}
+
 export class LocalTools {
   private permissions = config.get('permissions');
 
@@ -56,13 +76,13 @@ export class LocalTools {
           stderr: stderr.trim(),
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: getErrorMessage(error),
         data: {
-          stdout: error.stdout?.trim() || '',
-          stderr: error.stderr?.trim() || '',
+          stdout: getErrorStdout(error),
+          stderr: getErrorStderr(error),
         },
       };
     }
@@ -103,10 +123,10 @@ export class LocalTools {
         success: true,
         data: { content },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: getErrorMessage(error),
       };
     }
   }
@@ -148,10 +168,10 @@ export class LocalTools {
         success: true,
         data: { filePath },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: getErrorMessage(error),
       };
     }
   }
@@ -193,10 +213,10 @@ export class LocalTools {
         success: true,
         data: { files },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: getErrorMessage(error),
       };
     }
   }
@@ -233,10 +253,10 @@ export class LocalTools {
         success: true,
         data: { files },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message || 'No matches found',
+        error: getErrorMessage(error) || 'No matches found',
         data: { files: [] },
       };
     }
@@ -265,10 +285,10 @@ export class LocalTools {
           cpu: `${cpuInfo.trim()} cores`,
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         success: false,
-        error: error.message,
+        error: getErrorMessage(error),
       };
     }
   }

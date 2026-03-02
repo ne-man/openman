@@ -9,6 +9,9 @@ import { homedir } from 'os';
 import type { MemoryEntry } from '@/types';
 import { generateId, formatDate } from '@/utils';
 import { auditLogger } from '@/core/audit';
+import { Logger } from '@/utils/logger';
+
+const log = Logger.getInstance({ moduleName: 'MEM' }).createModuleLogger('MEM');
 
 export interface MemoryQuery {
   type?: 'episodic' | 'semantic' | 'preference';
@@ -48,14 +51,14 @@ export class MemorySystem {
           memory.timestamp = new Date(memory.timestamp);
           this.memories.set(memory.id, memory);
         } catch (error) {
-          console.error('Failed to parse memory:', error);
+          log.warn('Failed to parse memory entry');
         }
       }
 
-      console.log(`Loaded ${this.memories.size} memories`);
+      log.info(`Loaded ${this.memories.size} memories`);
     } catch (error) {
       // File doesn't exist yet, that's ok
-      console.log('No existing memories found');
+      log.debug('No existing memories found');
     }
   }
 
@@ -67,6 +70,7 @@ export class MemorySystem {
     }
 
     await fs.writeFile(this.memoryFile, lines.join('\n') + '\n', 'utf-8');
+    log.debug(`Saved ${this.memories.size} memories to file`);
   }
 
   /**
@@ -92,6 +96,8 @@ export class MemorySystem {
 
     this.memories.set(memory.id, memory);
     await this.saveMemories();
+
+    log.debug(`Added memory: ${memory.id} (type=${type}, importance=${(memory.importance ?? 0).toFixed(2)})`);
 
     await auditLogger.log({
       timestamp: new Date(),

@@ -221,10 +221,11 @@ export class StreamingAI extends EventEmitter {
           }
 
           // Send chunk
+          const anthropicEvent = event as { model?: string };
           const streamChunk: StreamChunk = {
             type: 'delta',
             delta: { content: token },
-            model: (event as any).model || 'claude-3',
+            model: anthropicEvent.model || 'claude-3',
             provider: 'anthropic',
           };
 
@@ -235,15 +236,16 @@ export class StreamingAI extends EventEmitter {
           }
         }
       } else if (event.type === 'message_stop') {
-        const usage = (event as any).usage || { input_tokens: 0, output_tokens: 0 };
+        const stopEvent = event as { usage?: { input_tokens?: number; output_tokens?: number }; model?: string };
+        const usage = stopEvent.usage || { input_tokens: 0, output_tokens: 0 };
         const response: AIResponse = {
           content: fullContent,
           usage: {
-            promptTokens: usage.input_tokens,
-            completionTokens: usage.output_tokens,
-            totalTokens: usage.input_tokens + usage.output_tokens,
+            promptTokens: usage.input_tokens || 0,
+            completionTokens: usage.output_tokens || 0,
+            totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
           },
-          model: (event as any).model || 'claude-3',
+          model: stopEvent.model || 'claude-3',
           provider: 'anthropic',
         };
 

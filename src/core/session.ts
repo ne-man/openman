@@ -1,5 +1,6 @@
 /**
  * Session Management System for OpenMan
+ * Refactored to use async initialization pattern
  */
 
 import fs from 'fs/promises';
@@ -8,6 +9,9 @@ import { homedir } from 'os';
 import { generateId } from '@/utils';
 import type { AIMessage, AIProvider } from '@/types';
 import { auditLogger } from '@/core/audit';
+import { Logger } from '@/utils/logger';
+
+const log = Logger.getInstance({ moduleName: 'SES' }).createModuleLogger('SES');
 
 export interface Session {
   id: string;
@@ -24,11 +28,34 @@ export class SessionManager {
   private sessionsDir: string;
   private sessions: Map<string, Session> = new Map();
   private currentSessionId: string | null = null;
+  private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor() {
     this.sessionsDir = path.join(homedir(), '.openman', 'sessions');
-    this.ensureSessionsDir();
-    this.loadSessions();
+    // Start async initialization
+    this.initPromise = this.initialize();
+  }
+
+  /**
+   * Ensure initialization is complete
+   */
+  public async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+  }
+
+  /**
+   * Async initialization
+   */
+  private async initialize(): Promise<void> {
+    log.debug('Initializing session manager...');
+    await this.ensureSessionsDir();
+    await this.loadSessions();
+    this.initialized = true;
+    log.info('Session manager initialized');
   }
 
   private async ensureSessionsDir(): Promise<void> {
@@ -50,13 +77,13 @@ export class SessionManager {
 
           this.sessions.set(session.id, session);
         } catch (error) {
-          console.error(`Failed to load session ${file}:`, error);
+          log.warn(`Failed to load session ${file}`);
         }
       }
 
-      console.log(`Loaded ${this.sessions.size} sessions`);
-    } catch (error) {
-      console.log('No existing sessions found');
+      log.info(`Loaded ${this.sessions.size} sessions`);
+    } catch {
+      log.debug('No existing sessions found');
     }
   }
 
@@ -73,14 +100,21 @@ export class SessionManager {
     provider: AIProvider = 'openai',
     model: string = 'gpt-4'
   ): Promise<Session> {
+    await this.ensureInitialized();
+    
+    // Validate input
+    const sanitizedName = this.sanitizeInput(name, 100);
+    const validProvider = this.validateProvider(provider);
+    const validModel = this.sanitizeInput(model, 50);
+
     const session: Session = {
       id: generateId('session-'),
-      name,
+      name: sanitizedName,
       createdAt: new Date(),
       updatedAt: new Date(),
       messages: [],
-      provider,
-      model,
+      provider: validProvider,
+      model: validModel,
       metadata: {},
     };
 
@@ -88,10 +122,12 @@ export class SessionManager {
     this.currentSessionId = session.id;
     await this.saveSession(session);
 
+    log.info(`Created session: ${session.id} (name=${sanitizedName}, provider=${validProvider})`);
+
     await auditLogger.log({
       timestamp: new Date(),
       action: 'session.create',
-      details: { sessionId: session.id, name, provider },
+      details: { sessionId: session.id, name: sanitizedName, provider: validProvider },
       result: 'success',
       riskLevel: 'low',
     });
@@ -103,6 +139,7 @@ export class SessionManager {
    * Get a session
    */
   public getSession(id: string): Session | undefined {
+    if (!this.isValidId(id)) return undefined;
     return this.sessions.get(id);
   }
 
@@ -120,6 +157,7 @@ export class SessionManager {
    * Set current session
    */
   public setCurrentSession(id: string): boolean {
+    if (!this.isValidId(id)) return false;
     if (this.sessions.has(id)) {
       this.currentSessionId = id;
       return true;
@@ -144,14 +182,22 @@ export class SessionManager {
     role: 'system' | 'user' | 'assistant',
     content: string
   ): Promise<Session | null> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(sessionId)) return null;
+    
     const session = this.sessions.get(sessionId);
     if (!session) {
       return null;
     }
 
+    // Validate and sanitize input
+    const validRole = this.validateRole(role);
+    const sanitizedContent = this.sanitizeInput(content, 100000); // 100KB max
+
     const message: AIMessage = {
-      role,
-      content,
+      role: validRole,
+      content: sanitizedContent,
       timestamp: new Date(),
     };
 
@@ -163,7 +209,7 @@ export class SessionManager {
     await auditLogger.log({
       timestamp: new Date(),
       action: 'session.addMessage',
-      details: { sessionId, role },
+      details: { sessionId, role: validRole },
       result: 'success',
       riskLevel: 'low',
     });
@@ -178,12 +224,28 @@ export class SessionManager {
     id: string,
     updates: Partial<Session>
   ): Promise<Session | null> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(id)) return null;
+    
     const session = this.sessions.get(id);
     if (!session) {
       return null;
     }
 
-    Object.assign(session, updates);
+    // Only allow specific fields to be updated
+    const allowedUpdates: Partial<Session> = {};
+    if (updates.name !== undefined) {
+      allowedUpdates.name = this.sanitizeInput(updates.name, 100);
+    }
+    if (updates.provider !== undefined) {
+      allowedUpdates.provider = this.validateProvider(updates.provider);
+    }
+    if (updates.model !== undefined) {
+      allowedUpdates.model = this.sanitizeInput(updates.model, 50);
+    }
+
+    Object.assign(session, allowedUpdates);
     session.updatedAt = new Date();
 
     await this.saveSession(session);
@@ -195,6 +257,10 @@ export class SessionManager {
    * Delete a session
    */
   public async deleteSession(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(id)) return false;
+    
     const session = this.sessions.get(id);
     if (!session) {
       return false;
@@ -224,6 +290,10 @@ export class SessionManager {
    * Clear messages in a session
    */
   public async clearSession(id: string): Promise<Session | null> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(id)) return null;
+    
     const session = this.sessions.get(id);
     if (!session) {
       return null;
@@ -241,6 +311,10 @@ export class SessionManager {
    * Export session
    */
   public async exportSession(id: string, format: 'json' | 'txt' = 'json'): Promise<string | null> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(id)) return null;
+    
     const session = this.sessions.get(id);
     if (!session) {
       return null;
@@ -268,11 +342,21 @@ export class SessionManager {
    * Import session
    */
   public async importSession(data: string): Promise<Session | null> {
+    await this.ensureInitialized();
+    
     try {
       const session: Session = JSON.parse(data);
-      session.id = generateId('session-'); // Generate new ID
+      
+      // Validate required fields
+      if (!session.name || !session.messages) {
+        throw new Error('Invalid session data: missing required fields');
+      }
+      
+      session.id = generateId('session-');
       session.createdAt = new Date(session.createdAt);
       session.updatedAt = new Date(session.updatedAt);
+      session.name = this.sanitizeInput(session.name, 100);
+      session.provider = this.validateProvider(session.provider);
 
       this.sessions.set(session.id, session);
       await this.saveSession(session);
@@ -321,8 +405,9 @@ export class SessionManager {
    * Search sessions
    */
   public searchSessions(query: string): Session[] {
+    const sanitizedQuery = this.sanitizeInput(query, 200);
     const results: Session[] = [];
-    const queryLower = query.toLowerCase();
+    const queryLower = sanitizedQuery.toLowerCase();
 
     for (const session of this.sessions.values()) {
       // Search in name
@@ -347,19 +432,82 @@ export class SessionManager {
    * Rename session
    */
   public async renameSession(id: string, name: string): Promise<Session | null> {
+    await this.ensureInitialized();
+    
+    if (!this.isValidId(id)) return null;
+    
     const session = this.sessions.get(id);
     if (!session) {
       return null;
     }
 
-    session.name = name;
+    session.name = this.sanitizeInput(name, 100);
     session.updatedAt = new Date();
 
     await this.saveSession(session);
 
     return session;
   }
+
+  // ============================================================================
+  // Validation & Sanitization Helpers
+  // ============================================================================
+
+  /**
+   * Validate session ID format
+   */
+  private isValidId(id: string): boolean {
+    return typeof id === 'string' && /^session-\d+-[a-z0-9]+$/.test(id);
+  }
+
+  /**
+   * Sanitize input string
+   */
+  private sanitizeInput(input: string, maxLength: number): string {
+    if (typeof input !== 'string') return '';
+    // Remove control characters and trim
+    const sanitized = input.replace(/[\x00-\x1F\x7F]/g, '').trim();
+    return sanitized.slice(0, maxLength);
+  }
+
+  /**
+   * Validate AI provider
+   */
+  private validateProvider(provider: AIProvider): AIProvider {
+    const validProviders: AIProvider[] = ['openai', 'anthropic', 'google', 'custom', 'webai'];
+    return validProviders.includes(provider) ? provider : 'openai';
+  }
+
+  /**
+   * Validate message role
+   */
+  private validateRole(role: string): 'system' | 'user' | 'assistant' {
+    const validRoles = ['system', 'user', 'assistant'];
+    return validRoles.includes(role) ? (role as 'system' | 'user' | 'assistant') : 'user';
+  }
 }
 
 // Singleton instance
+let sessionManagerInstance: SessionManager | null = null;
+
+/**
+ * Get session manager instance
+ */
+export function getSessionManager(): SessionManager {
+  if (!sessionManagerInstance) {
+    sessionManagerInstance = new SessionManager();
+  }
+  return sessionManagerInstance;
+}
+
+/**
+ * Initialize session manager and wait for ready
+ */
+export async function initSessionManager(): Promise<SessionManager> {
+  const instance = getSessionManager();
+  await instance.ensureInitialized();
+  return instance;
+}
+
+// Export for backward compatibility
 export const sessionManager = new SessionManager();
