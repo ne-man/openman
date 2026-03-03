@@ -1,13 +1,27 @@
 /**
- * Logger Module - Structured logging with file output
+ * Logger Module - Structured logging with file output and compression
  * 
  * Log format: [级别 时间 序号 线程 模块 文件:行号 函数] 实际内容
  * Example: [D 2026-02-28 22:39:02:631 8140 25270 IF bd_map.cpp:1928 operator()] message
+ * 
+ * Features:
+ * - Structured logging with file/line/func tracking
+ * - Auto-compression of old log files on startup
+ * - Maximum 10 compressed log archives
+ * - Console and file output with level filtering
  */
 
 import fs from 'fs';
 import path from 'path';
 import { homedir } from 'os';
+import zlib from 'zlib';
+import { promisify } from 'util';
+
+const gzip = promisify(zlib.gzip);
+const readdir = promisify(fs.readdir);
+const stat = promisify(fs.stat);
+const unlink = promisify(fs.unlink);
+const rename = promisify(fs.rename);
 
 // Log levels
 export type LogLevel = 'D' | 'I' | 'W' | 'E' | 'F';
@@ -35,6 +49,7 @@ export interface LoggerConfig {
   enableConsole: boolean;
   enableFile: boolean;
   moduleName?: string;
+  maxArchives: number;  // Maximum number of compressed archives to keep
 }
 
 // Default configuration
@@ -45,33 +60,28 @@ const DEFAULT_CONFIG: LoggerConfig = {
   enableConsole: true,
   enableFile: true,
   moduleName: 'APP',
+  maxArchives: 10,
 };
 
 /**
  * Get caller location from stack trace
- * This function captures the stack at the call site
  */
 export function getCallerLocation(stackOffset: number = 3): { file: string; line: number; func: string } {
   const stack = new Error('getCaller').stack?.split('\n') || [];
   
-  // Skip: Error, getCallerLocation, and internal logger methods
   for (let i = stackOffset; i < stack.length; i++) {
     const line = stack[i];
-    // Match patterns like "at functionName (file:line:col)" or "at file:line:col"
     const match = line.match(/at\s+(?:(\S+)\s+\()?(.+):(\d+):(\d+)\)?/);
     if (match) {
       const func = match[1] || 'anonymous';
       const filePath = match[2];
       const lineNum = parseInt(match[3], 10);
       
-      // Skip internal logger.ts calls
       if (filePath.includes('logger.ts')) {
         continue;
       }
       
-      // Extract filename from path
       const file = path.basename(filePath);
-      
       return { file, line: lineNum, func };
     }
   }
@@ -79,21 +89,10 @@ export function getCallerLocation(stackOffset: number = 3): { file: string; line
   return { file: 'unknown', line: 0, func: 'unknown' };
 }
 
-/**
- * LOC - Get current location for logging
- * Call this function at the log site to capture accurate file/line/func
- * 
- * Usage:
- *   log.info('message', LOC());
- */
 export function LOC(): { file: string; line: number; func: string } {
   return getCallerLocation(3);
 }
 
-/**
- * LOC_HERE - Get location with module name for convenient destructuring
- * Returns an object that can be spread into log methods
- */
 export function LOC_HERE(module?: string): { file: string; line: number; func: string; module?: string } {
   const loc = getCallerLocation(3);
   return module ? { ...loc, module } : loc;
@@ -119,13 +118,16 @@ export class Logger {
   }
 
   /**
-   * Initialize log file with timestamp and PID
+   * Initialize log file and compress old logs
    */
-  private initLogFile(): void {
+  private async initLogFile(): Promise<void> {
     // Ensure log directory exists
     if (!fs.existsSync(this.config.logDir)) {
       fs.mkdirSync(this.config.logDir, { recursive: true });
     }
+
+    // Compress old log files
+    await this.compressOldLogs();
 
     // Generate filename: YYYY-MM-DD-HH-mm-ss-PID.log
     const now = new Date();
@@ -139,16 +141,92 @@ export class Logger {
     const filename = `${year}-${month}-${day}-${hour}-${minute}-${second}-${this.pid}.log`;
     this.logFile = path.join(this.config.logDir, filename);
 
-    // Create empty log file
     fs.writeFileSync(this.logFile, '', 'utf8');
     
-    // Log initialization with explicit location
     this.logAt('I', `Logger initialized: ${this.logFile}`, {
       module: 'LOG',
       file: 'logger.ts',
-      line: 113,
+      line: 130,
       func: 'initLogFile',
     });
+  }
+
+  /**
+   * Compress old log files to .gz archives
+   */
+  private async compressOldLogs(): Promise<void> {
+    try {
+      const files = await readdir(this.config.logDir);
+      const logFiles = files.filter(f => f.endsWith('.log') && !f.includes(String(this.pid)));
+      
+      if (logFiles.length === 0) return;
+
+      console.log(`  📦 压缩 ${logFiles.length} 个旧日志文件...`);
+
+      for (const logFile of logFiles) {
+        const logPath = path.join(this.config.logDir, logFile);
+        const gzPath = logPath + '.gz';
+        
+        try {
+          // Check if gz already exists
+          if (!fs.existsSync(gzPath)) {
+            const content = await fs.promises.readFile(logPath);
+            if (content.length > 0) {
+              const compressed = await gzip(content);
+              await fs.promises.writeFile(gzPath, compressed);
+              await unlink(logPath);
+              console.log(`    ✓ 压缩: ${logFile} -> ${logFile}.gz`);
+            } else {
+              await unlink(logPath);
+            }
+          }
+        } catch (err) {
+          // Ignore compression errors
+        }
+      }
+
+      // Clean up old archives (keep only maxArchives)
+      await this.cleanupOldArchives();
+    } catch (err) {
+      // Ignore errors
+    }
+  }
+
+  /**
+   * Remove old archives beyond maxArchives limit
+   */
+  private async cleanupOldArchives(): Promise<void> {
+    try {
+      const files = await readdir(this.config.logDir);
+      const gzFiles = files.filter(f => f.endsWith('.log.gz'));
+      
+      if (gzFiles.length <= this.config.maxArchives) return;
+
+      // Get file stats and sort by modification time (oldest first)
+      const fileStats = await Promise.all(
+        gzFiles.map(async (f) => {
+          const filePath = path.join(this.config.logDir, f);
+          const stats = await stat(filePath);
+          return { name: f, path: filePath, mtime: stats.mtime };
+        })
+      );
+
+      fileStats.sort((a, b) => a.mtime.getTime() - b.mtime.getTime());
+
+      // Delete oldest files
+      const toDelete = fileStats.slice(0, fileStats.length - this.config.maxArchives);
+      
+      for (const file of toDelete) {
+        try {
+          await unlink(file.path);
+          console.log(`    🗑️ 删除旧归档: ${file.name}`);
+        } catch {
+          // Ignore deletion errors
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
   }
 
   /**
@@ -209,14 +287,13 @@ export class Logger {
     const logNum = String(++this.logCount).padStart(5, '0');
     const threadId = String(this.pid).padStart(5, ' ');
     
-    // Format: [D 2026-02-28 22:39:02:631 8140 25270 IF bd_map.cpp:1928 operator()] message
     const header = `[${level} ${timestamp} ${logNum} ${threadId} ${module} ${file}:${line} ${func}()]`;
     
     return `${header} ${message}`;
   }
 
   /**
-   * Core logging method with explicit location (preferred)
+   * Core logging method with explicit location
    */
   public logAt(
     level: LogLevel,
@@ -237,14 +314,11 @@ export class Logger {
     if (this.config.enableConsole && LOG_LEVELS[level].priority >= LOG_LEVELS[this.config.consoleLevel].priority) {
       const reset = '\x1b[0m';
       const levelColor = levelInfo.color;
-      
-      // Colorize the level
       const coloredEntry = `[${levelColor}${level}${reset}]${formattedEntry.substring(3)}`;
-      
       console.log(coloredEntry);
     }
 
-    // File output - use synchronous write to ensure immediate persistence
+    // File output
     if (this.config.enableFile && this.logFile && LOG_LEVELS[level].priority >= LOG_LEVELS[this.config.fileLevel].priority) {
       try {
         fs.appendFileSync(this.logFile, formattedEntry + '\n', 'utf8');
@@ -255,7 +329,7 @@ export class Logger {
   }
 
   /**
-   * Legacy logging method - auto-detects caller (less accurate)
+   * Legacy logging method
    */
   public log(level: LogLevel, message: string, options?: LogOptions): void {
     const callerInfo = options?.file
@@ -269,7 +343,7 @@ export class Logger {
   }
 
   /**
-   * Convenience methods with auto-detection (convenient but less accurate)
+   * Convenience methods
    */
   public debug(message: string, options?: LogOptions): void {
     this.log('D', message, options);
@@ -292,7 +366,7 @@ export class Logger {
   }
 
   /**
-   * Create a module logger with accurate location tracking
+   * Create a module logger
    */
   public createModuleLogger(moduleName: string): ModuleLogger {
     return new ModuleLogger(this, moduleName);
@@ -306,7 +380,7 @@ export class Logger {
       this.logAt('I', 'Logger shutting down', {
         module: 'LOG',
         file: 'logger.ts',
-        line: 271,
+        line: 300,
         func: 'close',
       });
     }
@@ -315,10 +389,6 @@ export class Logger {
 
 /**
  * Module logger - automatically captures caller location
- * 
- * Usage:
- *   const log = logger.createModuleLogger('MY_MODULE');
- *   log.info('message');  // Location is auto-captured
  */
 export class ModuleLogger {
   constructor(
@@ -326,18 +396,10 @@ export class ModuleLogger {
     private module: string
   ) {}
 
-  /**
-   * Get caller location with correct stack offset for ModuleLogger methods
-   */
   private getLocation(): { file: string; line: number; func: string } {
-    // Stack: Error -> getLocation -> debug/info/warn/error/fatal -> [caller]
     return getCallerLocation(4);
   }
 
-  /**
-   * Log message - location is automatically captured
-   * Usage: log.info('message')
-   */
   public debug(message: string): void {
     this.logger.logAt('D', message, { ...this.getLocation(), module: this.module });
   }
@@ -358,9 +420,6 @@ export class ModuleLogger {
     this.logger.logAt('F', message, { ...this.getLocation(), module: this.module });
   }
 
-  /**
-   * Log with explicit location (for special cases)
-   */
   public logAt(
     level: LogLevel,
     message: string,
@@ -374,5 +433,4 @@ export class ModuleLogger {
 export const logger = Logger.getInstance;
 export const createLogger = (config?: Partial<LoggerConfig>) => Logger.getInstance(config);
 
-// Default export
 export default Logger;

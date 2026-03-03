@@ -534,34 +534,88 @@ export class WebAIService {
       initialCount = 0;
     }
     
-    // Wait for a new response to appear (more elements than before)
-    try {
-      await page.waitForFunction(
-        (selector: string, count: number) => {
-          const elements = document.querySelectorAll(selector);
-          return elements.length > count;
-        },
-        { timeout: config.responseTimeout || 60000 },
-        foundResponseSelector,
-        initialCount
-      );
-    } catch {
-      // If the primary selector times out, try alternative selectors
-      console.log('  ⚠️ 主选择器超时，尝试备选选择器...');
-      const altSelectors = ['[class*="markdown"]', '[class*="message"]', '[class*="answer"]', '[class*="response"]'];
-      for (const sel of altSelectors) {
-        try {
-          const count = await page.$$eval(sel, els => els.length);
-          if (count > initialCount) {
-            foundResponseSelector = sel;
+    // 每秒检查状态，等待响应完成
+    console.log('  ⏳ 等待AI响应...');
+    const startTime = Date.now();
+    const maxWaitMs = config.responseTimeout || 60000;
+    let lastContent = '';
+    let lastLength = 0;
+    let stableCount = 0;
+    let responseStarted = false;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      // 每秒检查响应状态
+      const status = await page.evaluate(() => {
+        // 检测是否正在生成（多种指示器）
+        const typingSelectors = [
+          '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="wait"]',
+          '[class*="cursor"]', '[class*="blink"]', '.typing', '.loading'
+        ];
+        let isGenerating = false;
+        for (const sel of typingSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of Array.from(els)) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && 
+                (el as HTMLElement).offsetWidth > 0) {
+              isGenerating = true;
+              break;
+            }
+          }
+          if (isGenerating) break;
+        }
+
+        // 获取最新响应内容（更多选择器）
+        const contentSelectors = [
+          '[class*="markdown"]', '[class*="message-content"]', '[class*="answer"]',
+          '[class*="response"]', '[class*="assistant"]', '[class*="reply"]',
+          '[class*="content"]', '[data-role="assistant"]', '.prose',
+          'div[class*="message"]:last-child', 'div[class*="chat"]:last-child'
+        ];
+        let content = '';
+        let foundSelector = '';
+        for (const sel of contentSelectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) {
+            const lastEl = els[els.length - 1];
+            const text = lastEl?.textContent?.trim() || '';
+            if (text.length > content.length) {
+              content = text;
+              foundSelector = sel;
+            }
+          }
+        }
+
+        return { isGenerating, content, contentLength: content.length, selector: foundSelector };
+      });
+
+      // 响应已开始
+      if (status.contentLength > 0 && !responseStarted) {
+        responseStarted = true;
+        console.log(`  📝 AI开始响应 (${status.contentLength}字)...`);
+      }
+
+      // 检查内容是否稳定（连续2秒不变且不在生成）
+      if (status.contentLength > 10) {
+        if (status.content === lastContent || status.contentLength === lastLength) {
+          stableCount++;
+          if (stableCount >= 2 && !status.isGenerating) {
+            console.log(`  ✅ AI响应完成 (${status.contentLength}字)`);
+            lastContent = status.content;
             break;
           }
-        } catch { continue; }
+        } else {
+          stableCount = 0;
+        }
       }
-    }
+      
+      lastContent = status.content;
+      lastLength = status.contentLength;
 
-    // Wait a bit for response to finish streaming
-    await new Promise(resolve => setTimeout(resolve, 3000));
+      // 每秒检查一次
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
     // Get the last response element (AI's reply)
     let responseText = '';

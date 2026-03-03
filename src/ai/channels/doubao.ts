@@ -6,6 +6,11 @@
 import type { WebAIConfig } from '@/types';
 import type { ChannelHandler, ChannelParams } from './types';
 import { BrowserEngine } from '@/browser/engine';
+import { logger } from '@/utils/logger';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+
+const log = logger().createModuleLogger('DOUBAO');
 
 /**
  * Doubao channel default config
@@ -44,12 +49,12 @@ export class DoubaoChannel implements ChannelHandler {
     for (const sel of inputSelectors) {
       try {
         await page.waitForSelector(sel, { timeout: 10000 });
-        console.log(`  ✓ [豆包] 找到输入框: ${sel}`);
+        log.info(`找到输入框: ${sel}`);
         return;
       } catch { continue; }
     }
     
-    // Fallback wait
+    log.warn('未找到输入框，等待fallback');
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
@@ -57,7 +62,8 @@ export class DoubaoChannel implements ChannelHandler {
    * Send text query to doubao
    */
   async query(page: import('puppeteer').Page, text: string): Promise<string> {
-    // Find and click input
+    log.debug(`发送查询: ${text.slice(0, 50)}...`);
+    
     const inputSelectors = (this.config.inputSelector || 'textarea').split(',').map(s => s.trim());
     let foundSelector = '';
     
@@ -73,7 +79,6 @@ export class DoubaoChannel implements ChannelHandler {
       foundSelector = 'textarea';
     }
 
-    // Click and clear
     try {
       await page.click(foundSelector);
     } catch {
@@ -83,22 +88,19 @@ export class DoubaoChannel implements ChannelHandler {
       }, foundSelector);
     }
 
-    // Clear existing content
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyA');
     await page.keyboard.up('Control');
     await page.keyboard.press('Backspace');
 
-    // Insert text via CDP
     const client = await page.createCDPSession();
     await client.send('Input.insertText', { text });
     await client.detach();
 
-    // Wait and submit
     await new Promise(resolve => setTimeout(resolve, 500));
     await page.keyboard.press('Enter');
+    log.debug('已发送消息，等待响应');
 
-    // Wait for response
     return this.waitForResponse(page);
   }
 
@@ -106,35 +108,93 @@ export class DoubaoChannel implements ChannelHandler {
    * Query with image - Doubao uses attachment button menu
    */
   async queryWithImage(page: import('puppeteer').Page, imagePath: string, query: string): Promise<string> {
-    console.log('  🔍 [豆包] 图片上传流程...');
+    log.info(`图片上传流程: ${imagePath}`);
 
-    // Step 1: Find and click attachment button
     let uploaded = false;
     const attachmentBtn = await this.findAttachmentButton(page);
     
     if (attachmentBtn) {
       await attachmentBtn.click();
-      console.log('  📎 [豆包] 已点击附件图标');
+      log.info('已点击附件图标');
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Step 2: Click upload menu item
       uploaded = await this.clickUploadMenu(page, imagePath);
     }
 
-    // Fallback: direct file input
     if (!uploaded) {
       uploaded = await this.uploadViaFileInput(page, imagePath);
     }
 
     if (!uploaded) {
+      uploaded = await this.uploadViaDragDrop(page, imagePath);
+    }
+
+    if (!uploaded) {
+      log.error('图片上传失败');
       throw new Error('[豆包] 图片上传失败');
     }
 
-    // Wait for upload to complete
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    log.info('图片上传成功，等待处理');
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Send query
     return this.query(page, query);
+  }
+
+  /**
+   * Upload via drag and drop
+   */
+  private async uploadViaDragDrop(page: import('puppeteer').Page, imagePath: string): Promise<boolean> {
+    try {
+      const imageBuffer = await fs.readFile(imagePath);
+      const fileName = path.basename(imagePath);
+      const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+      const dragTargets = ['textarea', '[contenteditable="true"]', '[class*="input"]'];
+
+      for (const targetSel of dragTargets) {
+        const target = await page.$(targetSel);
+        if (!target) continue;
+
+        log.debug(`尝试拖拽上传到: ${targetSel}`);
+
+        const dragSuccess = await page.evaluate(async (base64Data: string, fName: string, mime: string, sel: string) => {
+          try {
+            const byteString = atob(base64Data);
+            const ab = new ArrayBuffer(byteString.length);
+            const ia = new Uint8Array(ab);
+            for (let i = 0; i < byteString.length; i++) {
+              ia[i] = byteString.charCodeAt(i);
+            }
+            const blob = new Blob([ab], { type: mime });
+            const file = new File([blob], fName, { type: mime });
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            
+            el.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer }));
+            el.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+            el.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+            return true;
+          } catch {
+            return false;
+          }
+        }, imageBuffer.toString('base64'), fileName, mimeType, targetSel);
+
+        if (dragSuccess) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const uploadIndicator = await page.$('[class*="uploading"], [class*="preview"], img[src*="blob"], [class*="image"]');
+          if (uploadIndicator) {
+            log.info('拖拽上传成功');
+            return true;
+          }
+        }
+      }
+    } catch (err) {
+      log.warn(`拖拽上传失败: ${err}`);
+    }
+    return false;
   }
 
   /**
@@ -159,14 +219,13 @@ export class DoubaoChannel implements ChannelHandler {
                    rect.width > 0 && rect.height > 0;
           });
           if (isVisible) {
-            console.log(`  📎 [豆包] 找到附件按钮: ${sel}`);
+            log.debug(`找到附件按钮: ${sel}`);
             return btn;
           }
         }
       } catch { continue; }
     }
 
-    // Iterate all buttons
     const allButtons = await page.$$('button');
     for (const btn of allButtons) {
       try {
@@ -183,12 +242,13 @@ export class DoubaoChannel implements ChannelHandler {
                  text.includes('附件') || text.includes('添加');
         });
         if (isAttachment) {
-          console.log('  📎 [豆包] 找到附件按钮 (遍历)');
+          log.debug('找到附件按钮 (遍历)');
           return btn;
         }
       } catch { continue; }
     }
 
+    log.debug('未找到附件按钮');
     return null;
   }
 
@@ -203,13 +263,13 @@ export class DoubaoChannel implements ChannelHandler {
         const text = await item.evaluate((el: Element) => el.textContent || '');
         if (text.includes('上传') || text.includes('图片') || text.includes('文件')) {
           await item.click();
-          console.log(`  ✅ [豆包] 已点击上传菜单项: ${text.slice(0, 20)}`);
+          log.debug(`点击上传菜单项: ${text.slice(0, 20)}`);
           await new Promise(resolve => setTimeout(resolve, 500));
           
           const fileInputs = await page.$$('input[type="file"]');
           if (fileInputs.length > 0) {
             await (fileInputs[0] as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
-            console.log('  ✅ [豆包] 上传成功');
+            log.info('菜单上传成功');
             return true;
           }
         }
@@ -226,7 +286,7 @@ export class DoubaoChannel implements ChannelHandler {
     for (const input of fileInputs) {
       try {
         await (input as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
-        console.log('  ✅ [豆包] 文件输入上传成功');
+        log.info('文件输入上传成功');
         return true;
       } catch { continue; }
     }
@@ -234,79 +294,78 @@ export class DoubaoChannel implements ChannelHandler {
   }
 
   /**
-   * Wait for AI response
+   * Wait for AI response with per-second status check
    */
   private async waitForResponse(page: import('puppeteer').Page): Promise<string> {
-    const responseSelectors = (this.config.responseSelector || '.response').split(',').map(s => s.trim());
-    
-    // Get initial count
-    let foundSelector = '';
-    let initialCount = 0;
-    
-    for (const sel of responseSelectors) {
-      try {
-        const count = await page.$$eval(sel, els => els.length);
-        foundSelector = sel;
-        initialCount = count;
-        break;
-      } catch { continue; }
-    }
+    const maxWaitMs = this.config.responseTimeout || 60000;
+    const startTime = Date.now();
+    let lastContent = '';
+    let lastLength = 0;
+    let stableCount = 0;
+    let responseStarted = false;
 
-    // Wait for new response
-    if (foundSelector) {
-      try {
-        await page.waitForFunction(
-          (selector: string, count: number) => {
-            const elements = document.querySelectorAll(selector);
-            return elements.length > count;
-          },
-          { timeout: this.config.responseTimeout || 60000 },
-          foundSelector,
-          initialCount
-        );
-      } catch {
-        console.log('  ⚠️ [豆包] 主选择器超时，尝试备选...');
-      }
-    }
+    log.debug('等待AI响应...');
 
-    // Wait for streaming to complete
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Get response text
-    for (const sel of responseSelectors) {
-      try {
-        const text = await page.$$eval(sel, (els) => {
-          const lastEl = els[els.length - 1];
-          return lastEl ? lastEl.textContent || '' : '';
-        });
-        if (text && text.trim().length > 10) {
-          console.log(`  ✓ [豆包] 获取响应成功`);
-          return text.trim();
+    while (Date.now() - startTime < maxWaitMs) {
+      const status = await page.evaluate(() => {
+        const typingSelectors = [
+          '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="cursor"]'
+        ];
+        let isGenerating = false;
+        for (const sel of typingSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of Array.from(els)) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && 
+                (el as HTMLElement).offsetWidth > 0) {
+              isGenerating = true;
+              break;
+            }
+          }
+          if (isGenerating) break;
         }
-      } catch { continue; }
-    }
 
-    // Fallback
-    const responseText = await page.evaluate(() => {
-      const selectors = [
-        '[class*="message"]',
-        '[class*="response"]',
-        '[class*="answer"]',
-        '[class*="markdown"]',
-      ];
+        const contentSelectors = [
+          '[class*="message"]', '[class*="response"]', '[class*="answer"]',
+          '[class*="markdown"]', '[class*="assistant"]', '[class*="reply"]'
+        ];
+        let content = '';
+        for (const sel of contentSelectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) {
+            const text = els[els.length - 1]?.textContent?.trim() || '';
+            if (text.length > content.length) content = text;
+          }
+        }
+
+        return { isGenerating, content, contentLength: content.length };
+      });
+
+      if (status.contentLength > 0 && !responseStarted) {
+        responseStarted = true;
+        log.info(`AI开始响应 (${status.contentLength}字)`);
+      }
+
+      if (status.contentLength > 10) {
+        if (status.content === lastContent || status.contentLength === lastLength) {
+          stableCount++;
+          if (stableCount >= 2 && !status.isGenerating) {
+            log.info(`AI响应完成 (${status.contentLength}字)`);
+            lastContent = status.content;
+            break;
+          }
+        } else {
+          stableCount = 0;
+        }
+      }
       
-      for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length > 0) {
-          const lastEl = els[els.length - 1];
-          const text = lastEl?.textContent?.trim() || '';
-          if (text.length > 20) return text;
-        }
-      }
-      return '';
-    });
+      lastContent = status.content;
+      lastLength = status.contentLength;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
-    return responseText.trim();
+    return lastContent;
   }
 }
 

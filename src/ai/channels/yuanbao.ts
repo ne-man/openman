@@ -6,8 +6,11 @@
 import type { WebAIConfig } from '@/types';
 import type { ChannelHandler, ChannelParams } from './types';
 import { BrowserEngine } from '@/browser/engine';
+import { logger } from '@/utils/logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+
+const log = logger().createModuleLogger('YUANBAO');
 
 /**
  * Yuanbao channel default config
@@ -46,12 +49,12 @@ export class YuanbaoChannel implements ChannelHandler {
     for (const sel of inputSelectors) {
       try {
         await page.waitForSelector(sel, { timeout: 10000 });
-        console.log(`  ✓ [元宝] 找到输入框: ${sel}`);
+        log.info(`找到输入框: ${sel}`);
         return;
       } catch { continue; }
     }
     
-    // Fallback wait
+    log.warn('未找到输入框，等待fallback');
     await new Promise(resolve => setTimeout(resolve, 3000));
   }
 
@@ -59,7 +62,8 @@ export class YuanbaoChannel implements ChannelHandler {
    * Send text query to yuanbao
    */
   async query(page: import('puppeteer').Page, text: string): Promise<string> {
-    // Find and click input
+    log.debug(`发送查询: ${text.slice(0, 50)}...`);
+    
     const inputSelectors = (this.config.inputSelector || 'textarea').split(',').map(s => s.trim());
     let foundSelector = '';
     
@@ -75,7 +79,6 @@ export class YuanbaoChannel implements ChannelHandler {
       foundSelector = '[contenteditable="true"]';
     }
 
-    // Click and clear
     try {
       await page.click(foundSelector);
     } catch {
@@ -85,22 +88,19 @@ export class YuanbaoChannel implements ChannelHandler {
       }, foundSelector);
     }
 
-    // Clear existing content
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyA');
     await page.keyboard.up('Control');
     await page.keyboard.press('Backspace');
 
-    // Insert text via CDP
     const client = await page.createCDPSession();
     await client.send('Input.insertText', { text });
     await client.detach();
 
-    // Wait and submit
     await new Promise(resolve => setTimeout(resolve, 500));
     await page.keyboard.press('Enter');
+    log.debug('已发送消息，等待响应');
 
-    // Wait for response
     return this.waitForResponse(page);
   }
 
@@ -108,24 +108,22 @@ export class YuanbaoChannel implements ChannelHandler {
    * Query with image - Yuanbao uses drag-and-drop
    */
   async queryWithImage(page: import('puppeteer').Page, imagePath: string, query: string): Promise<string> {
-    console.log('  🔍 [元宝] 图片上传流程...');
+    log.info(`图片上传流程: ${imagePath}`);
 
-    // Try drag-and-drop first (yuanbao's preferred method)
     let uploaded = await this.uploadViaDragDrop(page, imagePath);
 
-    // Fallback to file input
     if (!uploaded) {
       uploaded = await this.uploadViaFileInput(page, imagePath);
     }
 
     if (!uploaded) {
+      log.error('图片上传失败');
       throw new Error('[元宝] 图片上传失败');
     }
 
-    // Wait for upload to complete
+    log.info('图片上传成功，等待处理');
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Send query
     return this.query(page, query);
   }
 
@@ -148,7 +146,7 @@ export class YuanbaoChannel implements ChannelHandler {
       const target = await page.$(targetSel);
       if (!target) continue;
 
-      console.log(`  📷 [元宝] 尝试拖拽上传到: ${targetSel}`);
+      log.debug(`尝试拖拽上传到: ${targetSel}`);
 
       const dragSuccess = await page.evaluate(async (base64Data: string, fName: string, mime: string, sel: string) => {
         try {
@@ -178,7 +176,6 @@ export class YuanbaoChannel implements ChannelHandler {
       if (dragSuccess) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // Check for upload indicator
         const uploadIndicator = await page.$(`
           [class*="uploading"], 
           [class*="preview"], 
@@ -188,11 +185,12 @@ export class YuanbaoChannel implements ChannelHandler {
         `);
         
         if (uploadIndicator) {
-          console.log('  ✅ [元宝] 拖拽上传成功');
+          log.info('拖拽上传成功');
           return true;
         }
       }
     }
+    log.debug('拖拽上传未成功，尝试其他方式');
     return false;
   }
 
@@ -204,7 +202,7 @@ export class YuanbaoChannel implements ChannelHandler {
     for (const input of fileInputs) {
       try {
         await (input as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
-        console.log('  ✅ [元宝] 文件输入上传成功');
+        log.info('文件输入上传成功');
         return true;
       } catch { continue; }
     }
@@ -212,80 +210,78 @@ export class YuanbaoChannel implements ChannelHandler {
   }
 
   /**
-   * Wait for AI response
+   * Wait for AI response with per-second status check
    */
   private async waitForResponse(page: import('puppeteer').Page): Promise<string> {
-    const responseSelectors = (this.config.responseSelector || '.response').split(',').map(s => s.trim());
-    
-    // Get initial count
-    let foundSelector = '';
-    let initialCount = 0;
-    
-    for (const sel of responseSelectors) {
-      try {
-        const count = await page.$$eval(sel, els => els.length);
-        foundSelector = sel;
-        initialCount = count;
-        break;
-      } catch { continue; }
-    }
+    const maxWaitMs = this.config.responseTimeout || 60000;
+    const startTime = Date.now();
+    let lastContent = '';
+    let lastLength = 0;
+    let stableCount = 0;
+    let responseStarted = false;
 
-    // Wait for new response
-    if (foundSelector) {
-      try {
-        await page.waitForFunction(
-          (selector: string, count: number) => {
-            const elements = document.querySelectorAll(selector);
-            return elements.length > count;
-          },
-          { timeout: this.config.responseTimeout || 60000 },
-          foundSelector,
-          initialCount
-        );
-      } catch {
-        // Timeout - try alternative selectors
-        console.log('  ⚠️ [元宝] 主选择器超时，尝试备选...');
-      }
-    }
+    log.debug('等待AI响应...');
 
-    // Wait for streaming to complete
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Get response text
-    for (const sel of responseSelectors) {
-      try {
-        const text = await page.$$eval(sel, (els) => {
-          const lastEl = els[els.length - 1];
-          return lastEl ? lastEl.textContent || '' : '';
-        });
-        if (text && text.trim().length > 10) {
-          console.log(`  ✓ [元宝] 获取响应成功`);
-          return text.trim();
+    while (Date.now() - startTime < maxWaitMs) {
+      const status = await page.evaluate(() => {
+        const typingSelectors = [
+          '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="cursor"]'
+        ];
+        let isGenerating = false;
+        for (const sel of typingSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of Array.from(els)) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && 
+                (el as HTMLElement).offsetWidth > 0) {
+              isGenerating = true;
+              break;
+            }
+          }
+          if (isGenerating) break;
         }
-      } catch { continue; }
-    }
 
-    // Fallback: get any large text block
-    const responseText = await page.evaluate(() => {
-      const selectors = [
-        '[class*="markdown"]',
-        '[class*="message-content"]',
-        '[class*="answer"]',
-        '[class*="response"]',
-      ];
+        const contentSelectors = [
+          '[class*="markdown"]', '[class*="message-content"]', '[class*="answer"]',
+          '[class*="response"]', '[class*="assistant"]', '[class*="reply"]'
+        ];
+        let content = '';
+        for (const sel of contentSelectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) {
+            const text = els[els.length - 1]?.textContent?.trim() || '';
+            if (text.length > content.length) content = text;
+          }
+        }
+
+        return { isGenerating, content, contentLength: content.length };
+      });
+
+      if (status.contentLength > 0 && !responseStarted) {
+        responseStarted = true;
+        log.info(`AI开始响应 (${status.contentLength}字)`);
+      }
+
+      if (status.contentLength > 10) {
+        if (status.content === lastContent || status.contentLength === lastLength) {
+          stableCount++;
+          if (stableCount >= 2 && !status.isGenerating) {
+            log.info(`AI响应完成 (${status.contentLength}字)`);
+            lastContent = status.content;
+            break;
+          }
+        } else {
+          stableCount = 0;
+        }
+      }
       
-      for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length > 0) {
-          const lastEl = els[els.length - 1];
-          const text = lastEl?.textContent?.trim() || '';
-          if (text.length > 20) return text;
-        }
-      }
-      return '';
-    });
+      lastContent = status.content;
+      lastLength = status.contentLength;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
-    return responseText.trim();
+    return lastContent;
   }
 }
 
