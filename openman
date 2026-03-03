@@ -7,6 +7,7 @@
 #   run    - 启动 Web 服务
 #   web    - 打开浏览器控制台网页
 #   debug  - 编译 + 启动服务 + 打开控制台
+#   test   - 运行测试用例
 
 set -e
 
@@ -54,12 +55,19 @@ print_help() {
     echo -e "  ${GREEN}debug${NC}   编译 + 启动服务 + 打开控制台"
     echo -e "  ${GREEN}stop${NC}    停止运行中的服务"
     echo -e "  ${GREEN}status${NC}  查看服务状态"
+    echo -e "  ${GREEN}test${NC}    运行测试用例"
+    echo ""
+    echo "测试选项:"
+    echo "  test              运行所有测试"
+    echo "  test -case <name> 运行指定测试用例 (如: webai, core)"
+    echo "  test -watch       监听模式运行测试"
     echo ""
     echo "示例:"
     echo "  openman build          # 编译项目"
     echo "  openman run            # 启动 Web 服务"
     echo "  openman web            # 打开浏览器控制台"
     echo "  openman debug          # 完整调试模式"
+    echo "  openman test -case webai  # 测试 WebAI 通道"
     echo ""
 }
 
@@ -291,6 +299,58 @@ debug_mode() {
     wait
 }
 
+# 运行测试
+run_tests() {
+    local test_case=""
+    local watch_mode=false
+    
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -case|--case)
+                test_case="$2"
+                shift 2
+                ;;
+            -watch|--watch)
+                watch_mode=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    
+    echo -e "${CYAN}🧪 运行测试...${NC}"
+    cd "$PROJECT_DIR"
+    
+    local test_cmd="npx vitest"
+    
+    # 添加测试文件过滤
+    if [ -n "$test_case" ]; then
+        local test_file="tests/${test_case}.test.ts"
+        if [ -f "$test_file" ]; then
+            test_cmd="$test_cmd $test_file"
+            echo -e "  ${YELLOW}测试用例: $test_case${NC}"
+        else
+            echo -e "${RED}错误: 测试文件不存在: $test_file${NC}"
+            echo -e "可用的测试用例:"
+            ls -1 tests/*.test.ts 2>/dev/null | xargs -n1 basename | sed 's/.test.ts//' | while read f; do
+                echo -e "  - ${GREEN}$f${NC}"
+            done
+            exit 1
+        fi
+    fi
+    
+    # 非监听模式添加 --run
+    if [ "$watch_mode" = false ]; then
+        test_cmd="$test_cmd --run"
+    fi
+    
+    echo ""
+    eval "$test_cmd"
+}
+
 # 主入口
 main() {
     check_node
@@ -313,6 +373,10 @@ main() {
             ;;
         status)
             show_status
+            ;;
+        test)
+            shift
+            run_tests "$@"
             ;;
         help|--help|-h)
             print_help

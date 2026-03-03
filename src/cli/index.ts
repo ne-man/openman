@@ -563,8 +563,8 @@ program
 
       // Get screen size
       const screenInfo = await deviceTools.getScreenInfo(targetDevice.id);
-      const screenWidth = screenInfo.data?.width || 1080;
-      const screenHeight = screenInfo.data?.height || 2340;
+      const screenWidth = (screenInfo.data as { width?: number; height?: number })?.width || 1080;
+      const screenHeight = (screenInfo.data as { width?: number; height?: number })?.height || 2340;
 
       // Setup Web AI with multi-channel support
       webAIService.ensureDefaultConfigs();
@@ -620,7 +620,7 @@ program
         
         // Take screenshot
         const screenshotResult = await deviceTools.takeScreenshot({ deviceId: targetDevice.id });
-        if (!screenshotResult.success || !screenshotResult.data?.path) {
+        if (!screenshotResult.success || !(screenshotResult.data as { path?: string })?.path) {
           spinner.warn(chalk.yellow(`Step ${step}: Screenshot failed, retrying...`));
           consecutiveErrors++;
           if (consecutiveErrors >= maxConsecutiveErrors) {
@@ -631,7 +631,7 @@ program
           continue;
         }
         consecutiveErrors = 0;
-        const screenshotPath = screenshotResult.data.path;
+        const screenshotPath = (screenshotResult.data as { path: string }).path;
 
         // Ask AI what to do next
         spinner.text = `🤖 Step ${step}: AI analyzing...`;
@@ -733,9 +733,9 @@ ${explorationLog.slice(-5).map(l => `${l.step}. ${l.action}: ${l.observation.sli
           } else if (actionType === 'swipe') {
             const dir = action.direction || 'up';
             if (dir === 'up') {
-              await deviceTools.swipe(screenWidth / 2, screenHeight * 0.7, screenWidth / 2, screenHeight * 0.3, targetDevice.id);
+              await deviceTools.swipe(targetDevice.id, Math.round(screenWidth / 2), Math.round(screenHeight * 0.7), Math.round(screenWidth / 2), Math.round(screenHeight * 0.3));
             } else if (dir === 'down') {
-              await deviceTools.swipe(screenWidth / 2, screenHeight * 0.3, screenWidth / 2, screenHeight * 0.7, targetDevice.id);
+              await deviceTools.swipe(targetDevice.id, Math.round(screenWidth / 2), Math.round(screenHeight * 0.3), Math.round(screenWidth / 2), Math.round(screenHeight * 0.7));
             }
             actionDesc = `swipe ${dir}`;
             console.log(chalk.blue(`   👆 Swipe ${dir}`));
@@ -1496,7 +1496,8 @@ webaiCmd
 webaiCmd
   .command('list')
   .description('List all Web AI services')
-  .action(() => {
+  .action(async () => {
+    await config.ensureInitialized();
     const webais = config.listWebAIs();
 
     if (webais.length === 0) {
@@ -1569,6 +1570,7 @@ webaiCmd
     const spinner = ora(`Chatting with ${name}...`).start();
 
     try {
+      await config.ensureInitialized();
       const { webAIService } = await import('@/ai/webai');
       const aiConfig = config.getWebAI(name);
 
@@ -2204,8 +2206,8 @@ toolCmd
       }
       
       const screenInfo = await deviceTools.getScreenInfo(device.id);
-      const screenWidth = screenInfo.data?.width || 1080;
-      const screenHeight = screenInfo.data?.height || 2340;
+      const screenWidth = (screenInfo.data as { width?: number; height?: number })?.width || 1080;
+      const screenHeight = (screenInfo.data as { width?: number; height?: number })?.height || 2340;
       
       spinner.succeed(chalk.green(`Running tool "${tool.name}" on ${device.model}`));
       console.log(chalk.gray(`  ${tool.description}\n`));
