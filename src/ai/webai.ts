@@ -8,6 +8,12 @@ import { auditLogger } from '@/core/audit';
 import chalk from 'chalk';
 import path from 'path';
 import { homedir } from 'os';
+import {
+  createChannel,
+  getAvailableChannels,
+  DEFAULT_CHANNEL_ORDER,
+  type ChannelHandler,
+} from './channels';
 
 /**
  * Default selectors for popular AI services
@@ -43,26 +49,14 @@ const DEFAULT_SELECTORS: Record<string, Partial<WebAIConfig>> = {
     responseSelector: '.message-content',
     responseTimeout: 60000,
   },
-  'doubao.com': {
-    inputSelector: 'textarea',
-    submitSelector: 'button, [class*="send"], [class*="submit"]',
-    responseSelector: '[class*="message"], [class*="response"], [class*="answer"]',
-    responseTimeout: 60000,
-  },
-  'yuanbao.tencent.com': {
-    inputSelector: 'textarea',
-    submitSelector: 'button[class*="send"]',
-    responseSelector: '[class*="markdown"]',
-    responseTimeout: 120000,
-  },
 };
 
 /**
- * Default WebAI configurations
+ * Default WebAI configurations (yuanbao first)
  */
 const DEFAULT_WEBAIS: Array<{ name: string; url: string }> = [
-  { name: 'doubao', url: 'https://www.doubao.com/chat/' },
   { name: 'yuanbao', url: 'https://yuanbao.tencent.com/chat' },
+  { name: 'doubao', url: 'https://www.doubao.com/chat/' },
 ];
 
 export class WebAIService {
@@ -453,10 +447,33 @@ export class WebAIService {
     // Navigate to the AI service
     const { page } = await this.browserEngine!.navigate(config.url);
 
-    // Wait for page to fully load
-    await page.waitForSelector(config.inputSelector || 'textarea', {
-      timeout: 15000,
-    });
+    // Wait for page to fully load - try multiple input selectors
+    const inputSelectors = (config.inputSelector || 'textarea').split(',').map(s => s.trim());
+    let foundSelector = '';
+    for (const sel of inputSelectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 5000 });
+        foundSelector = sel;
+        console.log(`  ✓ 找到输入框: ${sel}`);
+        break;
+      } catch { continue; }
+    }
+    if (!foundSelector) {
+      // Fallback to more generic selectors
+      const fallbackSelectors = ['[contenteditable="true"]', 'textarea', '[class*="input"]'];
+      for (const sel of fallbackSelectors) {
+        try {
+          await page.waitForSelector(sel, { timeout: 10000 });
+          foundSelector = sel;
+          console.log(`  ✓ Fallback 找到输入框: ${sel}`);
+          break;
+        } catch { continue; }
+      }
+    }
+    
+    if (!foundSelector) {
+      throw new Error('无法找到输入框');
+    }
     
     // Extra wait for dynamic content
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -465,8 +482,18 @@ export class WebAIService {
     await this.handleVerificationDialog(page, configName);
 
     // Input content using CDP insertText (paste-like, no key events)
-    const inputSelector = config.inputSelector || 'textarea';
-    await page.click(inputSelector);
+    // Try to click the input element, with fallback to focus
+    try {
+      await page.click(foundSelector);
+    } catch {
+      // If click fails, try to focus the element
+      console.log('  ⚠️ 直接点击失败，尝试聚焦...');
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) (el as HTMLElement).focus();
+      }, foundSelector);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     
     // Clear existing content first
     await page.keyboard.down('Control');
@@ -485,33 +512,111 @@ export class WebAIService {
     // Press Enter to submit
     await page.keyboard.press('Enter');
 
-    // Wait for AI response
-    const responseSelector = config.responseSelector || '.response';
+    // Wait for AI response - try multiple selectors
+    const responseSelectors = (config.responseSelector || '.response').split(',').map(s => s.trim());
     
-    // Count existing messages before waiting
-    const initialCount = await page.$$eval(responseSelector, els => els.length);
+    // Try to find response elements with any selector
+    let foundResponseSelector = '';
+    let initialCount = 0;
+    for (const sel of responseSelectors) {
+      try {
+        const count = await page.$$eval(sel, els => els.length);
+        if (count >= 0) {
+          foundResponseSelector = sel;
+          initialCount = count;
+          break;
+        }
+      } catch { continue; }
+    }
+    
+    if (!foundResponseSelector) {
+      foundResponseSelector = '.response'; // fallback
+      initialCount = 0;
+    }
     
     // Wait for a new response to appear (more elements than before)
-    await page.waitForFunction(
-      (selector: string, count: number) => {
-        const elements = document.querySelectorAll(selector);
-        return elements.length > count;
-      },
-      { timeout: config.responseTimeout || 60000 },
-      responseSelector,
-      initialCount
-    );
+    try {
+      await page.waitForFunction(
+        (selector: string, count: number) => {
+          const elements = document.querySelectorAll(selector);
+          return elements.length > count;
+        },
+        { timeout: config.responseTimeout || 60000 },
+        foundResponseSelector,
+        initialCount
+      );
+    } catch {
+      // If the primary selector times out, try alternative selectors
+      console.log('  ⚠️ 主选择器超时，尝试备选选择器...');
+      const altSelectors = ['[class*="markdown"]', '[class*="message"]', '[class*="answer"]', '[class*="response"]'];
+      for (const sel of altSelectors) {
+        try {
+          const count = await page.$$eval(sel, els => els.length);
+          if (count > initialCount) {
+            foundResponseSelector = sel;
+            break;
+          }
+        } catch { continue; }
+      }
+    }
 
     // Wait a bit for response to finish streaming
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Get the last response element (AI's reply)
-    const responseText = await page.$$eval(responseSelector, (els) => {
-      const lastEl = els[els.length - 1];
-      return lastEl ? lastEl.textContent || '' : '';
-    });
+    let responseText = '';
+    
+    // Try multiple selectors to get response
+    for (const sel of responseSelectors) {
+      try {
+        const text = await page.$$eval(sel, (els) => {
+          const lastEl = els[els.length - 1];
+          return lastEl ? lastEl.textContent || '' : '';
+        });
+        if (text && text.trim().length > 10) {
+          responseText = text;
+          console.log(`  ✓ 获取响应成功 (${sel})`);
+          break;
+        }
+      } catch { continue; }
+    }
+    
+    // Fallback: try to get any large text block
+    if (!responseText || responseText.trim().length < 10) {
+      responseText = await page.evaluate(() => {
+        // Try multiple selectors
+        const selectors = [
+          '[class*="markdown"]',
+          '[class*="message-content"]',
+          '[class*="answer"]',
+          '[class*="response"]',
+          '[class*="assistant"]'
+        ];
+        
+        for (const sel of selectors) {
+          const els = document.querySelectorAll(sel);
+          if (els.length > 0) {
+            const lastEl = els[els.length - 1];
+            const text = lastEl?.textContent?.trim() || '';
+            if (text.length > 20) return text;
+          }
+        }
+        
+        // Fallback: get the longest text block
+        const allDivs = document.querySelectorAll('div, p, section');
+        let longestText = '';
+        allDivs.forEach((el) => {
+          const text = el.textContent?.trim() || '';
+          // Avoid huge text blocks
+          if (text.length > longestText.length && text.length < 5000) {
+            longestText = text;
+          }
+        });
+        return longestText;
+      });
+    }
 
-    if (!responseText) {
+    if (!responseText || responseText.trim().length < 5) {
       throw new Error('Response element not found');
     }
 
@@ -532,175 +637,218 @@ export class WebAIService {
     return response.content;
   }
 
-  /**
-   * Send a query with an image to a Web AI
-   */
-  public async queryWithImage(configName: string, imagePath: string, query: string): Promise<string> {
-    await this.ensureInitialized();
+/**
+ * Channel handlers cache
+ */
+private channelHandlers: Map<string, ChannelHandler> = new Map();
 
-    const config = this.configs.get(configName);
-    if (!config) {
-      throw new Error(`Web AI config not found: ${configName}`);
-    }
+/**
+ * Get or create channel handler
+ */
+private getChannelHandler(configName: string): ChannelHandler | null {
+  if (!this.browserEngine) return null;
+  
+  // Check cache
+  if (this.channelHandlers.has(configName)) {
+    return this.channelHandlers.get(configName)!;
+  }
+  
+  const config = this.configs.get(configName);
+  if (!config) return null;
+  
+  // Create channel handler
+  const handler = createChannel(configName, {
+    config,
+    browserEngine: this.browserEngine,
+  });
+  
+  if (handler) {
+    this.channelHandlers.set(configName, handler);
+  }
+  
+  return handler;
+}
 
-    // Navigate to the AI service
+/**
+ * Send a query with an image to a Web AI
+ */
+public async queryWithImage(configName: string, imagePath: string, query: string): Promise<string> {
+  await this.ensureInitialized();
+
+  const config = this.configs.get(configName);
+  if (!config) {
+    throw new Error(`Web AI config not found: ${configName}`);
+  }
+
+  // Try to use channel-specific handler
+  const handler = this.getChannelHandler(configName);
+  
+  if (handler) {
     const { page } = await this.browserEngine!.navigate(config.url);
-
-    // Wait for page to load - try multiple selectors
-    const inputSelectors = ['textarea', '[contenteditable="true"]', '[class*="input"]', '[class*="editor"]'];
-    let foundInput = false;
-    for (const sel of inputSelectors) {
-      try {
-        await page.waitForSelector(sel, { timeout: 5000 });
-        foundInput = true;
-        console.log(`  ✓ 找到输入框: ${sel}`);
-        break;
-      } catch { continue; }
-    }
-    if (!foundInput) {
-      console.log('  ⚠️ 未找到输入框，等待页面加载...');
-    }
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Check for verification dialogs - pass configName for fallback
+    await handler.waitForReady(page);
     await this.handleVerificationDialog(page, configName);
-
-    const fs = await import('fs/promises');
-    const pathModule = await import('path');
-
-    // 直接拖拽上传图片
-    try {
-      const imageBuffer = await fs.readFile(imagePath);
-      const fileName = pathModule.basename(imagePath);
-      const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      
-      await page.evaluate(async (base64Data: string, fileName: string, mimeType: string) => {
-        const byteString = atob(base64Data);
-        const ab = new ArrayBuffer(byteString.length);
-        const ia = new Uint8Array(ab);
-        for (let i = 0; i < byteString.length; i++) {
-          ia[i] = byteString.charCodeAt(i);
-        }
-        const blob = new Blob([ab], { type: mimeType });
-        const file = new File([blob], fileName, { type: mimeType });
-        const dataTransfer = new DataTransfer();
-        dataTransfer.items.add(file);
-        
-        // 找到输入区域并拖入
-        const target = document.querySelector('[contenteditable="true"]') || 
-                       document.querySelector('textarea') || 
-                       document.body;
-        target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer }));
-        target.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer }));
-        target.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer }));
-      }, imageBuffer.toString('base64'), fileName, mimeType);
-      
-      console.log('  📷 图片已拖入');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    } catch (e) {
-      console.log('  ⚠️ 拖入图片失败');
-    }
-
-    // Find and click input element
-    const possibleInputs = ['textarea', '[contenteditable="true"]', '[class*="input"]'];
-    let inputClicked = false;
-    for (const sel of possibleInputs) {
-      try {
-        const el = await page.$(sel);
-        if (el) {
-          await el.click();
-          inputClicked = true;
-          break;
-        }
-      } catch { continue; }
-    }
     
-    if (!inputClicked) {
-      // Click somewhere in the page to focus
-      await page.click('body');
-    }
+    const response = await handler.queryWithImage(page, imagePath, query);
     
-    // Clear and insert text using CDP
-    await page.keyboard.down('Control');
-    await page.keyboard.press('KeyA');
-    await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    
-    const client = await page.createCDPSession();
-    await client.send('Input.insertText', { text: query });
-    await client.detach();
-
-    // Wait then submit
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await page.keyboard.press('Enter');
-
-    // Wait for response
-    const responseSelector = config.responseSelector || '.response';
-    console.log(`  🔍 等待响应 (selector: ${responseSelector})...`);
-    
-    const initialCount = await page.$$eval(responseSelector, els => els.length);
-    console.log(`  📊 当前消息数: ${initialCount}`);
-
-    try {
-      await page.waitForFunction(
-        (selector: string, count: number) => {
-          const elements = document.querySelectorAll(selector);
-          return elements.length > count;
-        },
-        { timeout: config.responseTimeout || 120000 },
-        responseSelector,
-        initialCount
-      );
-    } catch (waitError) {
-      console.log(`  ⚠️ 等待响应超时，尝试获取当前内容`);
-    }
-
-    // Wait for AI to finish responding
-    await this.waitForResponseComplete(page, responseSelector);
-
-    // Get response - try multiple selectors
-    const responseText = await page.evaluate(() => {
-      const selectors = [
-        '[class*="markdown"]',
-        '[class*="message-content"]', 
-        '[class*="reply-content"]',
-        '[class*="answer"]',
-        '[class*="agent-response"]',
-        '[class*="assistant"]'
-      ];
-      
-      for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
-        if (els.length > 0) {
-          // 获取最后一个元素的文本
-          const lastEl = els[els.length - 1];
-          const text = lastEl?.textContent?.trim() || '';
-          if (text.length > 20) {
-            return text;
-          }
-        }
-      }
-      
-      // 备用：获取页面上最长的文本块
-      const allTexts = document.querySelectorAll('div, p, span');
-      let longestText = '';
-      for (const el of allTexts) {
-        const text = el.textContent?.trim() || '';
-        if (text.length > longestText.length && text.length < 10000) {
-          longestText = text;
-        }
-      }
-      return longestText;
-    });
-    
-    console.log(`  📝 响应长度: ${responseText.length} 字符`);
-
-    // Save page for follow-up questions
+    // Save active session
     this.activePage = page;
     this.activeConfig = config;
-
-    return responseText.trim();
+    
+    return response;
   }
+
+  // Fallback to generic method for unsupported channels
+  return this.queryWithImageGeneric(config, imagePath, query);
+}
+
+
+
+/**
+ * 通用图片上传方法
+ */
+private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, query: string): Promise<string> {
+  console.log('  🔍 通用上传流程...');
+  const { page } = await this.browserEngine!.navigate(config.url);
+
+  await this.waitForPageReady(page, config);
+  await this.handleVerificationDialog(page, config.name);
+
+  // 尝试文件输入上传
+  let uploaded = false;
+  const fileInputs = await page.$$('input[type="file"]');
+  for (const input of fileInputs) {
+    try {
+      await (input as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
+      console.log('  ✅ 通过文件输入上传成功');
+      uploaded = true;
+      break;
+    } catch { continue; }
+  }
+
+  // 尝试拖拽上传
+  if (!uploaded) {
+    const fs = await import('fs/promises');
+    const pathModule = await import('path');
+    
+    const imageBuffer = await fs.readFile(imagePath);
+    const fileName = pathModule.basename(imagePath);
+    const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+    const dragTargets = ['[contenteditable="true"]', 'textarea', '[class*="editor"]', '[class*="input"]'];
+
+    for (const targetSel of dragTargets) {
+      const target = await page.$(targetSel);
+      if (!target) continue;
+
+      const dragSuccess = await page.evaluate(async (base64Data: string, fName: string, mime: string, sel: string) => {
+        try {
+          const byteString = atob(base64Data);
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+          }
+          const blob = new Blob([ab], { type: mime });
+          const file = new File([blob], fName, { type: mime });
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          
+          el.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer }));
+          el.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+          el.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+          return true;
+        } catch {
+          return false;
+        }
+      }, imageBuffer.toString('base64'), fileName, mimeType, targetSel);
+
+      if (dragSuccess) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const uploadIndicator = await page.$('[class*="uploading"], [class*="preview"], img[src*="blob"]');
+        if (uploadIndicator) {
+          console.log('  ✅ 拖拽上传成功');
+          uploaded = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!uploaded) {
+    throw new Error('图片上传失败');
+  }
+
+  // 等待图片处理
+  console.log('  ⏳ 等待图片处理...');
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
+  // 查找并点击输入框
+  const inputSelectors = ['[contenteditable="true"]', 'textarea', '[class*="input"]'];
+  for (const sel of inputSelectors) {
+    try {
+      const el = await page.$(sel);
+      if (el) {
+        await el.click();
+        break;
+      }
+    } catch { continue; }
+  }
+
+  // 输入查询
+  const client = await page.createCDPSession();
+  await client.send('Input.insertText', { text: query });
+  await client.detach();
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // 提交
+  await page.keyboard.press('Enter');
+
+  // 等待响应
+  const responseSelectors = (config.responseSelector || '.response').split(',').map(s => s.trim());
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
+  // 获取响应
+  let responseText = '';
+  for (const sel of responseSelectors) {
+    try {
+      const els = await page.$$(sel);
+      if (els.length > 0) {
+        const lastEl = els[els.length - 1];
+        responseText = await lastEl.evaluate((el: Element) => el.textContent || '');
+        if (responseText.trim().length > 10) {
+          console.log(`  ✓ 获取响应成功`);
+          break;
+        }
+      }
+    } catch { continue; }
+  }
+
+  // 保存活跃会话
+  this.activePage = page;
+  this.activeConfig = config;
+
+  return responseText.trim();
+}
+
+  /**
+   * 等待页面准备就绪
+   */
+  private async waitForPageReady(page: import('puppeteer').Page, config: WebAIConfig): Promise<void> {
+    const inputSelectors = (config.inputSelector || 'textarea').split(',').map(s => s.trim());
+    for (const sel of inputSelectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 10000 });
+        console.log(`  ✓ 找到输入框: ${sel}`);
+        return;
+      } catch { continue; }
+    }
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+
+
 
   /**
    * Wait for AI response to complete (not still generating)
@@ -720,13 +868,10 @@ export class WebAIService {
       // 检查是否有"正在输入"指示器
       const isTyping = await page.evaluate(() => {
         const indicators = document.querySelectorAll('[class*="typing"], [class*="loading"], [class*="generating"], [class*="thinking"]');
-        for (const ind of indicators) {
+        return Array.from(indicators).some((ind) => {
           const style = window.getComputedStyle(ind);
-          if (style.display !== 'none' && style.visibility !== 'hidden') {
-            return true;
-          }
-        }
-        return false;
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        });
       });
 
       // 获取当前响应内容
