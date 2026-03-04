@@ -111,22 +111,24 @@ export class DoubaoChannel implements ChannelHandler {
     log.info(`图片上传流程: ${imagePath}`);
 
     let uploaded = false;
-    const attachmentBtn = await this.findAttachmentButton(page);
-    
-    if (attachmentBtn) {
-      await attachmentBtn.click();
-      log.info('已点击附件图标');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      uploaded = await this.clickUploadMenu(page, imagePath);
+
+    // 优先尝试拖拽上传（豆包支持拖拽）
+    uploaded = await this.uploadViaDragDrop(page, imagePath);
+
+    if (!uploaded) {
+      const attachmentBtn = await this.findAttachmentButton(page);
+
+      if (attachmentBtn) {
+        await attachmentBtn.click();
+        log.info('已点击附件图标');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        uploaded = await this.clickUploadMenu(page, imagePath);
+      }
     }
 
     if (!uploaded) {
       uploaded = await this.uploadViaFileInput(page, imagePath);
-    }
-
-    if (!uploaded) {
-      uploaded = await this.uploadViaDragDrop(page, imagePath);
     }
 
     if (!uploaded) {
@@ -149,7 +151,14 @@ export class DoubaoChannel implements ChannelHandler {
       const fileName = path.basename(imagePath);
       const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
 
-      const dragTargets = ['textarea', '[contenteditable="true"]', '[class*="input"]'];
+      // 豆包的输入区域选择器（优先级从高到低）
+      const dragTargets = [
+        '[contenteditable="true"]',
+        'textarea',
+        '[class*="editor"]',
+        '[class*="input"]',
+        '[class*="chat-input"]',
+      ];
 
       for (const targetSel of dragTargets) {
         const target = await page.$(targetSel);
@@ -169,12 +178,15 @@ export class DoubaoChannel implements ChannelHandler {
             const file = new File([blob], fName, { type: mime });
             const dataTransfer = new DataTransfer();
             dataTransfer.items.add(file);
-            
+
             const el = document.querySelector(sel);
             if (!el) return false;
-            
+
+            // 触发完整的拖拽事件序列
             el.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer }));
+            await new Promise(r => setTimeout(r, 100));
             el.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+            await new Promise(r => setTimeout(r, 100));
             el.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
             return true;
           } catch {
@@ -183,12 +195,37 @@ export class DoubaoChannel implements ChannelHandler {
         }, imageBuffer.toString('base64'), fileName, mimeType, targetSel);
 
         if (dragSuccess) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          const uploadIndicator = await page.$('[class*="uploading"], [class*="preview"], img[src*="blob"], [class*="image"]');
+          // 等待上传处理
+          await new Promise(resolve => setTimeout(resolve, 2500));
+
+          // 检测上传成功的指示器（更全面的选择器）
+          const uploadIndicator = await page.$(`
+            [class*="uploading"],
+            [class*="preview"],
+            [class*="image-preview"],
+            [class*="file-preview"],
+            img[src*="blob"],
+            [class*="image-container"],
+            [class*="attachment"]
+          `);
+
           if (uploadIndicator) {
-            log.info('拖拽上传成功');
+            log.info(`拖拽上传成功 (目标: ${targetSel})`);
             return true;
           }
+
+          // 额外检查：看是否有图片元素出现
+          const hasImage = await page.evaluate(() => {
+            const imgs = document.querySelectorAll('img[src*="blob"], img[src*="data:image"]');
+            return imgs.length > 0;
+          });
+
+          if (hasImage) {
+            log.info(`拖拽上传成功 - 检测到图片元素 (目标: ${targetSel})`);
+            return true;
+          }
+
+          log.debug(`拖拽上传未检测到图片 (目标: ${targetSel})`);
         }
       }
     } catch (err) {
@@ -201,10 +238,24 @@ export class DoubaoChannel implements ChannelHandler {
    * Find doubao attachment button
    */
   private async findAttachmentButton(page: import('puppeteer').Page): Promise<import('puppeteer').ElementHandle | null> {
+    // 尝试多种选择器匹配豆包网站的不同版本
     const selectors = [
+      // 直接选择器
       'button[aria-label*="附件"]',
       'button[aria-label*="attachment"]',
+      'button[aria-label*="图片"]',
+      'button[aria-label*="image"]',
+      'button[aria-label*="上传"]',
+      'button[aria-label*="upload"]',
+      // 类名选择器
       '[class*="attach"] button',
+      '[class*="upload"] button',
+      '[class*="image"] button',
+      '[class*="picture"] button',
+      // SVG 图标按钮（豆包可能使用图标）
+      'button:has(svg)',
+      '[class*="tool"] button',
+      '[class*="action"] button',
     ];
 
     for (const sel of selectors) {
@@ -214,8 +265,8 @@ export class DoubaoChannel implements ChannelHandler {
           const isVisible = await btn.evaluate((el: Element) => {
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && 
-                   style.visibility !== 'hidden' && 
+            return style.display !== 'none' &&
+                   style.visibility !== 'hidden' &&
                    rect.width > 0 && rect.height > 0;
           });
           if (isVisible) {
@@ -226,6 +277,7 @@ export class DoubaoChannel implements ChannelHandler {
       } catch { continue; }
     }
 
+    // 遍历所有按钮，检查是否是附件按钮
     const allButtons = await page.$$('button');
     for (const btn of allButtons) {
       try {
@@ -234,12 +286,17 @@ export class DoubaoChannel implements ChannelHandler {
           const rect = el.getBoundingClientRect();
           const ariaLabel = el.getAttribute('aria-label') || '';
           const text = el.textContent || '';
-          
+          const className = el.className || '';
+          const innerHTML = el.innerHTML || '';
+
           if (style.display === 'none' || style.visibility === 'hidden') return false;
           if (rect.width < 20 || rect.height > 60) return false;
-          
-          return ariaLabel.includes('附件') || ariaLabel.includes('attach') || 
-                 text.includes('附件') || text.includes('添加');
+
+          // 检查各种附件相关的关键词
+          const keywords = ['附件', 'attach', '图片', 'image', '上传', 'upload', '添加', 'add', 'picture', 'photo'];
+          const content = `${ariaLabel} ${text} ${className} ${innerHTML}`.toLowerCase();
+
+          return keywords.some(kw => content.includes(kw));
         });
         if (isAttachment) {
           log.debug('找到附件按钮 (遍历)');
@@ -283,11 +340,26 @@ export class DoubaoChannel implements ChannelHandler {
    */
   private async uploadViaFileInput(page: import('puppeteer').Page, imagePath: string): Promise<boolean> {
     const fileInputs = await page.$$('input[type="file"]');
+    log.debug(`找到 ${fileInputs.length} 个文件输入框`);
+
     for (const input of fileInputs) {
       try {
         await (input as import('puppeteer').ElementHandle<HTMLInputElement>).uploadFile(imagePath);
         log.info('文件输入上传成功');
-        return true;
+
+        // 等待上传处理
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // 检测上传成功
+        const hasImage = await page.evaluate(() => {
+          const imgs = document.querySelectorAll('img[src*="blob"], img[src*="data:image"]');
+          const previews = document.querySelectorAll('[class*="preview"], [class*="image"]');
+          return imgs.length > 0 || previews.length > 0;
+        });
+
+        if (hasImage) {
+          return true;
+        }
       } catch { continue; }
     }
     return false;
