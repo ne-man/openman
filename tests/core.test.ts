@@ -1,5 +1,15 @@
 /**
  * Test file for OpenMan
+ *
+ * Case IDs:
+ * - core.001: load configuration
+ * - core.002: get browser config
+ * - core.003: assess risk levels
+ * - core.004: check permissions
+ * - core.005: get system info
+ * - core.006: get current tasks
+ * - core.007: get task history
+ * - core.008: create browser instance
  */
 
 import { describe, it, expect } from 'vitest';
@@ -12,7 +22,8 @@ import { config } from '@/core/config';
 
 describe('OpenMan Core Tests', () => {
   describe('ConfigManager', () => {
-    it('should load configuration', () => {
+    // core.001: load configuration
+    it('[core.001] should load configuration', () => {
       const cfg = config.getAll();
       expect(cfg).toHaveProperty('ai');
       expect(cfg).toHaveProperty('browser');
@@ -21,14 +32,16 @@ describe('OpenMan Core Tests', () => {
       expect(cfg).toHaveProperty('debug');
     });
 
-    it('should get browser config', () => {
+    // core.002: get browser config
+    it('[core.002] should get browser config', () => {
       const browserCfg = config.get('browser');
       expect(browserCfg).toHaveProperty('headless');
     });
   });
 
   describe('PermissionManager', () => {
-    it('should assess risk levels', () => {
+    // core.003: assess risk levels
+    it('[core.003] should assess risk levels', () => {
       const highRisk = permissionManager.assessRisk('web', 'payments');
       const mediumRisk = permissionManager.assessRisk('local', 'write');
       const lowRisk = permissionManager.assessRisk('web', 'browsing');
@@ -40,12 +53,14 @@ describe('OpenMan Core Tests', () => {
   });
 
   describe('LocalTools', () => {
-    it('should check permissions', async () => {
+    // core.004: check permissions
+    it('[core.004] should check permissions', async () => {
       const hasPermission = await localTools.checkPermission('local', 'read');
       expect(typeof hasPermission).toBe('boolean');
     });
 
-    it('should get system info', async () => {
+    // core.005: get system info
+    it('[core.005] should get system info', async () => {
       // This test might fail in certain environments
       try {
         const info = await localTools.getSystemInfo();
@@ -58,19 +73,22 @@ describe('OpenMan Core Tests', () => {
   });
 
   describe('ReasoningEngine', () => {
-    it('should get current tasks', () => {
+    // core.006: get current tasks
+    it('[core.006] should get current tasks', () => {
       const tasks = reasoningEngine.getCurrentTasks();
       expect(Array.isArray(tasks)).toBe(true);
     });
 
-    it('should get task history', () => {
+    // core.007: get task history
+    it('[core.007] should get task history', () => {
       const history = reasoningEngine.getTaskHistory();
       expect(Array.isArray(history)).toBe(true);
     });
   });
 
   describe('BrowserEngine', () => {
-    it('should create browser instance', () => {
+    // core.008: create browser instance
+    it('[core.008] should create browser instance', () => {
       const browser = new BrowserEngine({ headless: true });
       expect(browser).toBeInstanceOf(BrowserEngine);
     });

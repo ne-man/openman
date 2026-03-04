@@ -1,6 +1,27 @@
 /**
  * WebAI Channel Tests
  * Tests for WebAI multi-channel capabilities
+ *
+ * Case IDs:
+ * - webai.001: load WebAI configurations
+ * - webai.002: have at least one WebAI channel
+ * - webai.003: get specific WebAI config
+ * - webai.004: add config to service
+ * - webai.005: get available config names
+ * - webai.006: ensure default configs
+ * - webai.007: return available channels in order
+ * - webai.008: have yuanbao config available
+ * - webai.009: query with yuanbao channel
+ * - webai.010: handle follow-up with yuanbao
+ * - webai.011: have test image directory
+ * - webai.012: find available screenshots
+ * - webai.013: query with image using yuanbao
+ * - webai.014: query with image using doubao
+ * - webai.015: have test code directory
+ * - webai.016: create sample code file
+ * - webai.017: analyze code file with yuanbao
+ * - webai.018: analyze code file with doubao
+ * - webai.019: throw error for non-existent config
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -19,7 +40,7 @@ describe('WebAI Channel Tests', () => {
   beforeAll(async () => {
     // 确保配置初始化
     await config.ensureInitialized();
-    
+
     // 创建测试目录
     await fs.mkdir(TEST_IMAGE_DIR, { recursive: true });
     await fs.mkdir(TEST_CODE_DIR, { recursive: true });
@@ -32,13 +53,15 @@ describe('WebAI Channel Tests', () => {
   });
 
   describe('Configuration Management', () => {
-    it('should load WebAI configurations', async () => {
+    // webai.001: load WebAI configurations
+    it('[webai.001] should load WebAI configurations', async () => {
       const webAIs = config.listWebAIs();
       console.log(`Loaded ${webAIs.length} WebAI configs`);
       expect(Array.isArray(webAIs)).toBe(true);
     });
 
-    it('should have at least one WebAI channel configured', async () => {
+    // webai.002: have at least one WebAI channel configured
+    it('[webai.002] should have at least one WebAI channel configured', async () => {
       const webAIs = config.listWebAIs();
       if (webAIs.length === 0) {
         console.log('No WebAI configured, skipping test');
@@ -47,7 +70,8 @@ describe('WebAI Channel Tests', () => {
       expect(webAIs.length).toBeGreaterThan(0);
     });
 
-    it('should get specific WebAI config', async () => {
+    // webai.003: get specific WebAI config
+    it('[webai.003] should get specific WebAI config', async () => {
       const webAIs = config.listWebAIs();
       if (webAIs.length === 0) {
         console.log('No WebAI configured, skipping test');
@@ -63,7 +87,8 @@ describe('WebAI Channel Tests', () => {
   });
 
   describe('WebAI Service', () => {
-    it('should add config to service', async () => {
+    // webai.004: add config to service
+    it('[webai.004] should add config to service', async () => {
       const webAIs = config.listWebAIs();
       if (webAIs.length === 0) {
         console.log('No WebAI configured, skipping test');
@@ -77,13 +102,15 @@ describe('WebAI Channel Tests', () => {
       expect(configs.some(c => c.name === firstAI.name)).toBe(true);
     });
 
-    it('should get available config names', async () => {
+    // webai.005: get available config names
+    it('[webai.005] should get available config names', async () => {
       const availableConfigs = webAIService.getAvailableConfigs();
       expect(Array.isArray(availableConfigs)).toBe(true);
       expect(availableConfigs.length).toBeGreaterThan(0);
     });
 
-    it('should ensure default configs', async () => {
+    // webai.006: ensure default configs
+    it('[webai.006] should ensure default configs', async () => {
       webAIService.ensureDefaultConfigs();
       const configs = webAIService.getAvailableConfigs();
       expect(configs).toContain('doubao');
@@ -92,7 +119,8 @@ describe('WebAI Channel Tests', () => {
   });
 
   describe('Multi-Channel Fallback', () => {
-    it('should return available channels in order', async () => {
+    // webai.007: return available channels in order
+    it('[webai.007] should return available channels in order', async () => {
       const configs = webAIService.getAvailableConfigs();
       console.log('Available channels:', configs.join(', '));
       expect(configs.length).toBeGreaterThan(0);
@@ -101,14 +129,16 @@ describe('WebAI Channel Tests', () => {
 
   describe('Yuanbao Channel Tests', () => {
     const yuanbaoConfig = 'yuanbao';
-    
-    it('should have yuanbao config available', async () => {
+
+    // webai.008: have yuanbao config available
+    it('[webai.008] should have yuanbao config available', async () => {
       const configs = webAIService.getAvailableConfigs();
       expect(configs).toContain(yuanbaoConfig);
       console.log('Yuanbao config is available');
     });
 
-    it('should query with yuanbao channel', async () => {
+    // webai.009: query with yuanbao channel
+    it('[webai.009] should query with yuanbao channel', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes(yuanbaoConfig)) {
         console.log('Yuanbao not configured, skipping');
@@ -117,13 +147,14 @@ describe('WebAI Channel Tests', () => {
 
       console.log('Testing yuanbao channel query...');
       const response = await webAIService.query(yuanbaoConfig, '你好，请简短回复：测试成功');
-      
+
       expect(response).toBeDefined();
       expect(response.length).toBeGreaterThan(5);
       console.log(`Yuanbao response (${response.length} chars): ${response.slice(0, 100)}...`);
     }, 120000);
 
-    it('should handle follow-up with yuanbao', async () => {
+    // webai.010: handle follow-up with yuanbao
+    it('[webai.010] should handle follow-up with yuanbao', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes(yuanbaoConfig)) {
         console.log('Yuanbao not configured, skipping');
@@ -142,7 +173,7 @@ describe('WebAI Channel Tests', () => {
         const response2 = await webAIService.followUp('我刚才让你记住的数字是什么？');
         expect(response2).toBeDefined();
         console.log(`Follow-up response: ${response2.slice(0, 100)}...`);
-        
+
         const mentionsNumber = response2.includes('42');
         console.log(`Response mentions 42: ${mentionsNumber}`);
       }
@@ -150,12 +181,14 @@ describe('WebAI Channel Tests', () => {
   });
 
   describe('Image Query Tests', () => {
-    it('should have test image directory', async () => {
+    // webai.011: have test image directory
+    it('[webai.011] should have test image directory', async () => {
       const exists = await fs.access(TEST_IMAGE_DIR).then(() => true).catch(() => false);
       expect(exists).toBe(true);
     });
 
-    it('should find available screenshots for testing', async () => {
+    // webai.012: find available screenshots for testing
+    it('[webai.012] should find available screenshots for testing', async () => {
       try {
         const files = await fs.readdir(SCREENSHOTS_DIR);
         const pngFiles = files.filter(f => f.endsWith('.png'));
@@ -165,7 +198,8 @@ describe('WebAI Channel Tests', () => {
       }
     });
 
-    it('should query with image using yuanbao', async () => {
+    // webai.013: query with image using yuanbao
+    it('[webai.013] should query with image using yuanbao', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes('yuanbao')) {
         console.log('Yuanbao not configured, skipping');
@@ -204,13 +238,14 @@ describe('WebAI Channel Tests', () => {
 
       console.log(`Testing image query with: ${testImage}`);
       const response = await webAIService.queryWithImage('yuanbao', testImage, '请描述这张图片的内容');
-      
+
       expect(response).toBeDefined();
       expect(response.length).toBeGreaterThan(10);
       console.log(`Image query response (${response.length} chars): ${response.slice(0, 100)}...`);
     }, 180000);
 
-    it('should query with image using doubao', async () => {
+    // webai.014: query with image using doubao
+    it('[webai.014] should query with image using doubao', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes('doubao')) {
         console.log('Doubao not configured, skipping');
@@ -248,7 +283,7 @@ describe('WebAI Channel Tests', () => {
 
       console.log(`Testing image query with doubao: ${testImage}`);
       const response = await webAIService.queryWithImage('doubao', testImage, '请描述这张图片');
-      
+
       expect(response).toBeDefined();
       expect(response.length).toBeGreaterThan(10);
       console.log(`Doubao image query response (${response.length} chars): ${response.slice(0, 100)}...`);
@@ -258,12 +293,14 @@ describe('WebAI Channel Tests', () => {
   describe('Source Code File Tests', () => {
     const testCodeFile = path.join(TEST_CODE_DIR, 'example.ts');
 
-    it('should have test code directory', async () => {
+    // webai.015: have test code directory
+    it('[webai.015] should have test code directory', async () => {
       const exists = await fs.access(TEST_CODE_DIR).then(() => true).catch(() => false);
       expect(exists).toBe(true);
     });
 
-    it('should create sample code file for testing', async () => {
+    // webai.016: create sample code file for testing
+    it('[webai.016] should create sample code file for testing', async () => {
       const sampleCode = `// Sample TypeScript code for testing
 function fibonacci(n: number): number {
   if (n <= 1) return n;
@@ -274,13 +311,14 @@ const result = fibonacci(10);
 console.log('Fibonacci of 10:', result);
 `;
       await fs.writeFile(testCodeFile, sampleCode, 'utf-8');
-      
+
       const exists = await fs.access(testCodeFile).then(() => true).catch(() => false);
       expect(exists).toBe(true);
       console.log(`Created test code file: ${testCodeFile}`);
     });
 
-    it('should analyze code file with yuanbao', async () => {
+    // webai.017: analyze code file with yuanbao
+    it('[webai.017] should analyze code file with yuanbao', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes('yuanbao')) {
         console.log('Yuanbao not configured, skipping');
@@ -295,7 +333,7 @@ console.log('Fibonacci of 10:', result);
       }
 
       console.log('Testing code analysis with yuanbao...');
-      
+
       // 读取代码文件内容
       const codeContent = await fs.readFile(testCodeFile, 'utf-8');
       const prompt = `请分析以下代码并指出可能的问题：
@@ -304,13 +342,14 @@ ${codeContent}
 \`\`\``;
 
       const response = await webAIService.query('yuanbao', prompt);
-      
+
       expect(response).toBeDefined();
       expect(response.length).toBeGreaterThan(20);
       console.log(`Code analysis response (${response.length} chars): ${response.slice(0, 150)}...`);
     }, 120000);
 
-    it('should analyze code file with doubao', async () => {
+    // webai.018: analyze code file with doubao
+    it('[webai.018] should analyze code file with doubao', async () => {
       const configs = webAIService.getAvailableConfigs();
       if (!configs.includes('doubao')) {
         console.log('Doubao not configured, skipping');
@@ -325,7 +364,7 @@ ${codeContent}
       }
 
       console.log('Testing code analysis with doubao...');
-      
+
       // 读取代码文件内容
       const codeContent = await fs.readFile(testCodeFile, 'utf-8');
       const prompt = `这段代码实现了什么功能？有什么优化建议？
@@ -334,7 +373,7 @@ ${codeContent}
 \`\`\``;
 
       const response = await webAIService.query('doubao', prompt);
-      
+
       expect(response).toBeDefined();
       expect(response.length).toBeGreaterThan(20);
       console.log(`Doubao code analysis response (${response.length} chars): ${response.slice(0, 150)}...`);
@@ -342,7 +381,8 @@ ${codeContent}
   });
 
   describe('Error Handling', () => {
-    it('should throw error for non-existent config', async () => {
+    // webai.019: throw error for non-existent config
+    it('[webai.019] should throw error for non-existent config', async () => {
       await expect(
         webAIService.query('non-existent-ai', 'test')
       ).rejects.toThrow('not found');

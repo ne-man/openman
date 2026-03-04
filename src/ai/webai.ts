@@ -5,6 +5,7 @@
 import type { WebAIConfig, AIMessage, AIResponse, AIProvider } from '@/types';
 import { BrowserEngine } from '@/browser/engine';
 import { auditLogger } from '@/core/audit';
+import { logger, Timer } from '@/utils/logger';
 import chalk from 'chalk';
 import path from 'path';
 import { homedir } from 'os';
@@ -14,6 +15,9 @@ import {
   DEFAULT_CHANNEL_ORDER,
   type ChannelHandler,
 } from './channels';
+
+const log = logger().createModuleLogger('WEBAI');
+const startTimer = (name: string) => new Timer(name, log);
 
 /**
  * Default selectors for popular AI services
@@ -418,25 +422,13 @@ export class WebAIService {
     configName: string,
     messages: AIMessage[]
   ): Promise<AIResponse> {
+    const timer = startTimer('chat');
     await this.ensureInitialized();
 
     const config = this.configs.get(configName);
     if (!config) {
       throw new Error(`Web AI config not found: ${configName}`);
     }
-
-    // Log the action
-    await auditLogger.log({
-      timestamp: new Date(),
-      action: 'webai.chat',
-      details: {
-        configName,
-        url: config.url,
-        messageCount: messages.length,
-      },
-      result: 'success',
-      riskLevel: 'low',
-    });
 
     // Get the last user message
     const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
@@ -445,6 +437,7 @@ export class WebAIService {
     }
 
     // Navigate to the AI service
+    log.info(`[${configName}] navigate start`);
     const { page } = await this.browserEngine!.navigate(config.url);
 
     // Wait for page to fully load - try multiple input selectors
@@ -474,6 +467,7 @@ export class WebAIService {
     if (!foundSelector) {
       throw new Error('无法找到输入框');
     }
+    log.info(`[${configName}] page ready`);
     
     // Extra wait for dynamic content
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -511,6 +505,8 @@ export class WebAIService {
 
     // Press Enter to submit
     await page.keyboard.press('Enter');
+    log.info(`[${configName}] input submitted, wait response`);
+    await page.keyboard.press('Enter');
 
     // Wait for AI response - try multiple selectors
     const responseSelectors = (config.responseSelector || '.response').split(',').map(s => s.trim());
@@ -542,17 +538,24 @@ export class WebAIService {
     let lastLength = 0;
     let stableCount = 0;
     let responseStarted = false;
+    let loopCount = 0;
 
     while (Date.now() - startTime < maxWaitMs) {
+      loopCount++;
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+
       // 每秒检查响应状态
       const status = await page.evaluate(() => {
         // 检测是否正在生成（多种指示器）
+        // 注意：移除了 [class*="cursor"] 和 [class*="blink"]，因为它们容易误匹配
         const typingSelectors = [
           '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
           '[class*="thinking"]', '[class*="streaming"]', '[class*="wait"]',
-          '[class*="cursor"]', '[class*="blink"]', '.typing', '.loading'
+          '[class*="cursor-blink"]', '[class*="typing-cursor"]', 
+          '[class*="generating-cursor"]', '.typing', '.loading'
         ];
         let isGenerating = false;
+        let matchedTypingSelector = '';
         for (const sel of typingSelectors) {
           const els = document.querySelectorAll(sel);
           for (const el of Array.from(els)) {
@@ -560,6 +563,7 @@ export class WebAIService {
             if (style.display !== 'none' && style.visibility !== 'hidden' && 
                 (el as HTMLElement).offsetWidth > 0) {
               isGenerating = true;
+              matchedTypingSelector = sel;
               break;
             }
           }
@@ -587,25 +591,46 @@ export class WebAIService {
           }
         }
 
-        return { isGenerating, content, contentLength: content.length, selector: foundSelector };
+        return { 
+          isGenerating, 
+          matchedTypingSelector,
+          content, 
+          contentLength: content.length, 
+          contentSelector: foundSelector 
+        };
       });
+
+      // 详细日志：每次循环记录状态
+      log.debug(`[循环#${loopCount}] ${elapsedSec}s | isGenerating=${status.isGenerating} | ` +
+        `typingSelector=${status.matchedTypingSelector || 'none'} | ` +
+        `contentLen=${status.contentLength} | ` +
+        `contentSelector=${status.contentSelector || 'none'} | ` +
+        `stableCount=${stableCount}`);
 
       // 响应已开始
       if (status.contentLength > 0 && !responseStarted) {
         responseStarted = true;
         console.log(`  📝 AI开始响应 (${status.contentLength}字)...`);
+        log.info(`AI开始响应 (${status.contentLength}字) [选择器: ${status.contentSelector}]`);
       }
 
-      // 检查内容是否稳定（连续2秒不变且不在生成）
-      if (status.contentLength > 10) {
+      // 检查内容是否稳定（内容有变化且不在生成）
+      // 移除了 contentLength > 10 的限制，改为只要有内容就检测
+      if (status.contentLength > 0) {
         if (status.content === lastContent || status.contentLength === lastLength) {
           stableCount++;
+          log.debug(`[稳定性检测] 内容稳定 #${stableCount} (len=${status.contentLength}, isGenerating=${status.isGenerating})`);
+          // 内容稳定2秒且不在生成，则认为完成
           if (stableCount >= 2 && !status.isGenerating) {
             console.log(`  ✅ AI响应完成 (${status.contentLength}字)`);
+            log.info(`AI响应完成 (${status.contentLength}字) [耗时: ${elapsedSec}s, 循环: ${loopCount}次]`);
             lastContent = status.content;
             break;
           }
         } else {
+          if (stableCount > 0) {
+            log.debug(`[稳定性检测] 内容变化，重置stableCount ${stableCount}->0`);
+          }
           stableCount = 0;
         }
       }
@@ -616,6 +641,9 @@ export class WebAIService {
       // 每秒检查一次
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
+
+    const totalSec = Math.round((Date.now() - startTime) / 1000);
+    log.info(`响应等待结束: 总耗时=${totalSec}s, 循环次数=${loopCount}, 内容长度=${lastContent.length}`);
 
     // Get the last response element (AI's reply)
     let responseText = '';
@@ -674,6 +702,8 @@ export class WebAIService {
       throw new Error('Response element not found');
     }
 
+    log.info(`[${configName}] response done (${responseText.length} chars)`);
+    timer.log(`[${configName}] total`);
     return {
       content: responseText.trim(),
       model: config.name,
@@ -727,6 +757,7 @@ private getChannelHandler(configName: string): ChannelHandler | null {
  * Send a query with an image to a Web AI
  */
 public async queryWithImage(configName: string, imagePath: string, query: string): Promise<string> {
+  const timer = startTimer('queryWithImage');
   await this.ensureInitialized();
 
   const config = this.configs.get(configName);
@@ -736,23 +767,26 @@ public async queryWithImage(configName: string, imagePath: string, query: string
 
   // Try to use channel-specific handler
   const handler = this.getChannelHandler(configName);
-  
+
   if (handler) {
     const { page } = await this.browserEngine!.navigate(config.url);
     await handler.waitForReady(page);
     await this.handleVerificationDialog(page, configName);
-    
+
     const response = await handler.queryWithImage(page, imagePath, query);
-    
+
     // Save active session
     this.activePage = page;
     this.activeConfig = config;
-    
+
+    timer.log(`[${configName}]`);
     return response;
   }
 
   // Fallback to generic method for unsupported channels
-  return this.queryWithImageGeneric(config, imagePath, query);
+  const result = await this.queryWithImageGeneric(config, imagePath, query);
+  timer.log(`[${configName}]`);
+  return result;
 }
 
 
@@ -980,6 +1014,7 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
    * Send a follow-up question in the same conversation
    */
   public async followUp(question: string): Promise<string> {
+    const timer = startTimer('followUp');
     if (!this.activePage || !this.activeConfig) {
       throw new Error('No active conversation. Start with queryWithImage first.');
     }
@@ -993,13 +1028,13 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     // Input follow-up using CDP insertText (paste-like)
     const inputSelector = config.inputSelector || 'textarea';
     await page.click(inputSelector);
-    
+
     // Clear and insert text at once
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyA');
     await page.keyboard.up('Control');
     await page.keyboard.press('Backspace');
-    
+
     const client = await page.createCDPSession();
     await client.send('Input.insertText', { text: question });
     await client.detach();
@@ -1032,6 +1067,7 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
       return lastEl ? lastEl.textContent || '' : '';
     });
 
+    timer.log();
     return responseText.trim();
   }
 
@@ -1128,8 +1164,9 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
    * Query with automatic fallback to other WebAI channels
    */
   public async queryWithFallback(query: string, preferredConfig?: string): Promise<{ response: string; usedConfig: string }> {
+    const timer = startTimer('queryWithFallback');
     this.ensureDefaultConfigs();
-    
+
     const configs = this.getAvailableConfigs();
     if (configs.length === 0) {
       throw new Error('No WebAI configurations available');
@@ -1146,22 +1183,23 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     for (const configName of orderedConfigs) {
       try {
         console.log(chalk.cyan(`\n🔄 尝试通道: ${configName}`));
-        
+
         const response = await this.query(configName, query);
-        
+
         // Check if we got a valid response
         if (response && response.length > 10) {
+          timer.log(`[${configName}]`);
           return { response, usedConfig: configName };
         }
-        
+
         console.log(chalk.yellow(`   ⚠️ ${configName} 响应无效，切换通道...`));
         failedConfigs.push(configName);
-        
+
       } catch (error: any) {
         lastError = error;
         failedConfigs.push(configName);
         console.log(chalk.yellow(`   ⚠️ ${configName} 失败: ${error.message?.slice(0, 50)}`));
-        
+
         // Check if verification is needed
         if (this.activePage && await this.isVerificationRequired(this.activePage)) {
           console.log(chalk.yellow(`   🔐 ${configName} 需要验证，尝试切换通道...`));
@@ -1173,13 +1211,14 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     // All channels failed, wait for human intervention on the last channel
     if (failedConfigs.length >= orderedConfigs.length && this.activePage) {
       console.log(chalk.red('\n❌ 所有通道都失败了'));
-      
+
       const humanHelped = await this.waitForHumanIntervention(this.activePage);
       if (humanHelped) {
         // Retry with the last config
         const lastConfig = orderedConfigs[orderedConfigs.length - 1];
         try {
           const response = await this.query(lastConfig, query);
+          timer.log(`[${lastConfig}]`);
           return { response, usedConfig: lastConfig };
         } catch (retryError) {
           throw new Error(`人工干预后仍然失败: ${(retryError as Error).message}`);
@@ -1194,12 +1233,13 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
    * Query with image and automatic fallback
    */
   public async queryWithImageFallback(
-    imagePath: string, 
-    query: string, 
+    imagePath: string,
+    query: string,
     preferredConfig?: string
   ): Promise<{ response: string; usedConfig: string }> {
+    const timer = startTimer('queryWithImageFallback');
     this.ensureDefaultConfigs();
-    
+
     const configs = this.getAvailableConfigs();
     if (configs.length === 0) {
       throw new Error('No WebAI configurations available');
@@ -1215,21 +1255,22 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     for (const configName of orderedConfigs) {
       try {
         console.log(chalk.cyan(`\n🔄 尝试通道: ${configName}`));
-        
+
         const response = await this.queryWithImage(configName, imagePath, query);
-        
+
         if (response && response.length > 10) {
+          timer.log(`[${configName}]`);
           return { response, usedConfig: configName };
         }
-        
+
         console.log(chalk.yellow(`   ⚠️ ${configName} 响应无效，切换通道...`));
         failedConfigs.push(configName);
-        
+
       } catch (error: any) {
         lastError = error;
         failedConfigs.push(configName);
         console.log(chalk.yellow(`   ⚠️ ${configName} 失败: ${error.message?.slice(0, 50)}`));
-        
+
         if (this.activePage && await this.isVerificationRequired(this.activePage)) {
           console.log(chalk.yellow(`   🔐 ${configName} 需要验证，尝试切换通道...`));
           continue;
@@ -1240,12 +1281,13 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     // All failed, wait for human
     if (failedConfigs.length >= orderedConfigs.length && this.activePage) {
       console.log(chalk.red('\n❌ 所有通道都失败了'));
-      
+
       const humanHelped = await this.waitForHumanIntervention(this.activePage);
       if (humanHelped) {
         const lastConfig = orderedConfigs[orderedConfigs.length - 1];
         try {
           const response = await this.queryWithImage(lastConfig, imagePath, query);
+          timer.log(`[${lastConfig}]`);
           return { response, usedConfig: lastConfig };
         } catch (retryError) {
           throw new Error(`人工干预后仍然失败: ${(retryError as Error).message}`);

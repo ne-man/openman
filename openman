@@ -303,16 +303,21 @@ debug_mode() {
 run_tests() {
     local test_case=""
     local watch_mode=false
-    
+    local list_mode=false
+
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -case|--case)
+            -c|--case|-case)
                 test_case="$2"
                 shift 2
                 ;;
-            -watch|--watch)
+            -w|--watch)
                 watch_mode=true
+                shift
+                ;;
+            -l|--list)
+                list_mode=true
                 shift
                 ;;
             *)
@@ -320,35 +325,22 @@ run_tests() {
                 ;;
         esac
     done
-    
-    echo -e "${CYAN}🧪 运行测试...${NC}"
+
     cd "$PROJECT_DIR"
-    
-    local test_cmd="npx vitest"
-    
-    # 添加测试文件过滤
+
+    # 使用 CLI 的 test 命令
+    check_build
+
+    local test_args=""
     if [ -n "$test_case" ]; then
-        local test_file="tests/${test_case}.test.ts"
-        if [ -f "$test_file" ]; then
-            test_cmd="$test_cmd $test_file"
-            echo -e "  ${YELLOW}测试用例: $test_case${NC}"
-        else
-            echo -e "${RED}错误: 测试文件不存在: $test_file${NC}"
-            echo -e "可用的测试用例:"
-            ls -1 tests/*.test.ts 2>/dev/null | xargs -n1 basename | sed 's/.test.ts//' | while read f; do
-                echo -e "  - ${GREEN}$f${NC}"
-            done
-            exit 1
-        fi
+        test_args="--case $test_case"
     fi
-    
-    # 非监听模式添加 --run
-    if [ "$watch_mode" = false ]; then
-        test_cmd="$test_cmd --run"
+    if [ "$list_mode" = true ]; then
+        test_args="--list"
     fi
-    
-    echo ""
-    eval "$test_cmd"
+
+    # 使用 tsx 运行 TypeScript（避免路径别名问题）
+    npx tsx "$SRC_CLI" test $test_args
 }
 
 # 主入口

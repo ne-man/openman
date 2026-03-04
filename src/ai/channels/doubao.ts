@@ -63,7 +63,7 @@ export class DoubaoChannel implements ChannelHandler {
    */
   async query(page: import('puppeteer').Page, text: string): Promise<string> {
     log.debug(`发送查询: ${text.slice(0, 50)}...`);
-    
+
     const inputSelectors = (this.config.inputSelector || 'textarea').split(',').map(s => s.trim());
     let foundSelector = '';
     
@@ -308,11 +308,15 @@ export class DoubaoChannel implements ChannelHandler {
 
     while (Date.now() - startTime < maxWaitMs) {
       const status = await page.evaluate(() => {
+        // 注意：移除了 [class*="cursor"]，因为它容易误匹配页面上的光标样式
         const typingSelectors = [
           '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
-          '[class*="thinking"]', '[class*="streaming"]', '[class*="cursor"]'
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="wait"]',
+          '[class*="cursor-blink"]', '[class*="typing-cursor"]', 
+          '[class*="generating-cursor"]', '.typing', '.loading'
         ];
         let isGenerating = false;
+        let matchedSelector = '';
         for (const sel of typingSelectors) {
           const els = document.querySelectorAll(sel);
           for (const el of Array.from(els)) {
@@ -320,6 +324,7 @@ export class DoubaoChannel implements ChannelHandler {
             if (style.display !== 'none' && style.visibility !== 'hidden' && 
                 (el as HTMLElement).offsetWidth > 0) {
               isGenerating = true;
+              matchedSelector = sel;
               break;
             }
           }
@@ -331,23 +336,32 @@ export class DoubaoChannel implements ChannelHandler {
           '[class*="markdown"]', '[class*="assistant"]', '[class*="reply"]'
         ];
         let content = '';
+        let contentSelector = '';
         for (const sel of contentSelectors) {
           const els = document.querySelectorAll(sel);
           if (els.length > 0) {
             const text = els[els.length - 1]?.textContent?.trim() || '';
-            if (text.length > content.length) content = text;
+            if (text.length > content.length) {
+              content = text;
+              contentSelector = sel;
+            }
           }
         }
 
-        return { isGenerating, content, contentLength: content.length };
+        return { isGenerating, matchedSelector, content, contentLength: content.length, contentSelector };
       });
+
+      // 详细日志
+      log.debug(`isGenerating=${status.isGenerating}, matched=${status.matchedSelector || 'none'}, ` +
+        `contentLen=${status.contentLength}, stableCount=${stableCount}`);
 
       if (status.contentLength > 0 && !responseStarted) {
         responseStarted = true;
-        log.info(`AI开始响应 (${status.contentLength}字)`);
+        log.info(`AI开始响应 (${status.contentLength}字) [选择器: ${status.contentSelector}]`);
       }
 
-      if (status.contentLength > 10) {
+      // 检查内容是否稳定（移除了 contentLength > 10 的限制）
+      if (status.contentLength > 0) {
         if (status.content === lastContent || status.contentLength === lastLength) {
           stableCount++;
           if (stableCount >= 2 && !status.isGenerating) {

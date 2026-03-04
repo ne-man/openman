@@ -2346,6 +2346,10 @@ toolCmd
 // Main
 // ============================================================================
 
+// 注册 test 命令
+import { registerTestCommand } from './test';
+registerTestCommand(program);
+
 if (process.argv.length === 2) {
   program.outputHelp();
 } else {

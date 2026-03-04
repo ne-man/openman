@@ -63,7 +63,7 @@ export class YuanbaoChannel implements ChannelHandler {
    */
   async query(page: import('puppeteer').Page, text: string): Promise<string> {
     log.debug(`发送查询: ${text.slice(0, 50)}...`);
-    
+
     const inputSelectors = (this.config.inputSelector || 'textarea').split(',').map(s => s.trim());
     let foundSelector = '';
     
@@ -219,16 +219,25 @@ export class YuanbaoChannel implements ChannelHandler {
     let lastLength = 0;
     let stableCount = 0;
     let responseStarted = false;
+    let loopCount = 0;
 
     log.debug('等待AI响应...');
 
     while (Date.now() - startTime < maxWaitMs) {
+      loopCount++;
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+
+      // 详细检测页面状态
       const status = await page.evaluate(() => {
+        // 注意：移除了 [class*="cursor"] 和 [class*="blink"]，因为它们容易误匹配
         const typingSelectors = [
           '[class*="typing"]', '[class*="loading"]', '[class*="generating"]', 
-          '[class*="thinking"]', '[class*="streaming"]', '[class*="cursor"]'
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="wait"]',
+          '[class*="cursor-blink"]', '[class*="typing-cursor"]', 
+          '[class*="generating-cursor"]', '.typing', '.loading'
         ];
         let isGenerating = false;
+        let matchedSelector = '';
         for (const sel of typingSelectors) {
           const els = document.querySelectorAll(sel);
           for (const el of Array.from(els)) {
@@ -236,6 +245,7 @@ export class YuanbaoChannel implements ChannelHandler {
             if (style.display !== 'none' && style.visibility !== 'hidden' && 
                 (el as HTMLElement).offsetWidth > 0) {
               isGenerating = true;
+              matchedSelector = sel;
               break;
             }
           }
@@ -247,31 +257,53 @@ export class YuanbaoChannel implements ChannelHandler {
           '[class*="response"]', '[class*="assistant"]', '[class*="reply"]'
         ];
         let content = '';
+        let contentSelector = '';
         for (const sel of contentSelectors) {
           const els = document.querySelectorAll(sel);
           if (els.length > 0) {
             const text = els[els.length - 1]?.textContent?.trim() || '';
-            if (text.length > content.length) content = text;
+            if (text.length > content.length) {
+              content = text;
+              contentSelector = sel;
+            }
           }
         }
 
-        return { isGenerating, content, contentLength: content.length };
+        return { 
+          isGenerating, 
+          matchedSelector,
+          content, 
+          contentLength: content.length,
+          contentSelector
+        };
       });
+
+      // 详细日志：每次循环都记录状态
+      log.debug(`[循环#${loopCount}] ${elapsedSec}s | isGenerating=${status.isGenerating} | ` +
+        `matchedSelector=${status.matchedSelector || 'none'} | ` +
+        `contentLen=${status.contentLength} | ` +
+        `contentSelector=${status.contentSelector || 'none'} | ` +
+        `stableCount=${stableCount}`);
 
       if (status.contentLength > 0 && !responseStarted) {
         responseStarted = true;
-        log.info(`AI开始响应 (${status.contentLength}字)`);
+        log.info(`AI开始响应 (${status.contentLength}字) [选择器: ${status.contentSelector}]`);
       }
 
-      if (status.contentLength > 10) {
+      // 检查内容是否稳定（移除了 contentLength > 10 的限制）
+      if (status.contentLength > 0) {
         if (status.content === lastContent || status.contentLength === lastLength) {
           stableCount++;
+          log.debug(`[稳定性检测] 内容稳定 #${stableCount} (len=${status.contentLength}, isGenerating=${status.isGenerating})`);
           if (stableCount >= 2 && !status.isGenerating) {
-            log.info(`AI响应完成 (${status.contentLength}字)`);
+            log.info(`AI响应完成 (${status.contentLength}字) [耗时: ${elapsedSec}s, 循环: ${loopCount}次]`);
             lastContent = status.content;
             break;
           }
         } else {
+          if (stableCount > 0) {
+            log.debug(`[稳定性检测] 内容变化，重置stableCount ${stableCount}->0`);
+          }
           stableCount = 0;
         }
       }
@@ -281,6 +313,8 @@ export class YuanbaoChannel implements ChannelHandler {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
+    const totalSec = Math.round((Date.now() - startTime) / 1000);
+    log.info(`waitForResponse结束: 总耗时=${totalSec}s, 循环次数=${loopCount}, 内容长度=${lastContent.length}`);
     return lastContent;
   }
 }

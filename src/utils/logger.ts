@@ -429,6 +429,45 @@ export class ModuleLogger {
   }
 }
 
+/**
+ * Timer - 可复用的时间统计工具
+ */
+export class Timer {
+  private startTime: number;
+  private name: string;
+  private moduleLog: ModuleLogger;
+
+  constructor(name: string, moduleLog: ModuleLogger) {
+    this.name = name;
+    this.moduleLog = moduleLog;
+    this.startTime = Date.now();
+  }
+
+  /**
+   * 获取已消耗时间(ms)
+   */
+  elapsed(): number {
+    return Date.now() - this.startTime;
+  }
+
+  /**
+   * 记录并返回消耗时间
+   */
+  log(message?: string): number {
+    const ms = this.elapsed();
+    const msg = message || `${this.name} 耗时`;
+    this.moduleLog.info(`${msg}: ${ms}ms`);
+    return ms;
+  }
+
+  /**
+   * 重置计时器
+   */
+  reset(): void {
+    this.startTime = Date.now();
+  }
+}
+
 // Convenience exports
 export const logger = Logger.getInstance;
 export const createLogger = (config?: Partial<LoggerConfig>) => Logger.getInstance(config);
