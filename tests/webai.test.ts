@@ -161,21 +161,40 @@ describe('WebAI Channel Tests', () => {
         return;
       }
 
-      console.log('Testing yuanbao follow-up...');
+      console.log('Testing multi-turn conversation with yuanbao...');
+
+      // First query
       const response1 = await webAIService.query(yuanbaoConfig, '请记住数字42，稍后我会问你');
       expect(response1).toBeDefined();
-      console.log('Initial query completed');
+      expect(response1.length).toBeGreaterThan(5);
+      console.log(`Response 1 (${response1.length} chars): ${response1.slice(0, 100)}...`);
 
+      // Check if we have an active conversation
       const hasActive = webAIService.hasActiveConversation();
       console.log(`Active conversation: ${hasActive}`);
+      expect(hasActive).toBe(true);
 
       if (hasActive) {
+        // Second query (follow-up 1)
         const response2 = await webAIService.followUp('我刚才让你记住的数字是什么？');
         expect(response2).toBeDefined();
-        console.log(`Follow-up response: ${response2.slice(0, 100)}...`);
+        expect(response2.length).toBeGreaterThan(5);
+        console.log(`Response 2 (${response2.length} chars): ${response2.slice(0, 100)}...`);
 
         const mentionsNumber = response2.includes('42');
-        console.log(`Response mentions 42: ${mentionsNumber}`);
+        console.log(`Response 2 mentions 42: ${mentionsNumber}`);
+
+        // Third query (follow-up 2)
+        const response3 = await webAIService.followUp('很好！现在请把这个数字乘以2，结果是多少？');
+        expect(response3).toBeDefined();
+        expect(response3.length).toBeGreaterThan(5);
+        console.log(`Response 3 (${response3.length} chars): ${response3.slice(0, 100)}...`);
+
+        const mentions84 = response3.includes('84');
+        console.log(`Response 3 mentions 84: ${mentions84}`);
+
+        // Verify at least one of the follow-ups worked correctly
+        expect(mentionsNumber || mentions84).toBe(true);
       }
     }, 180000);
   });

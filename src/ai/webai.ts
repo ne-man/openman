@@ -620,8 +620,8 @@ export class WebAIService {
         if (status.content === lastContent || status.contentLength === lastLength) {
           stableCount++;
           log.debug(`[稳定性检测] 内容稳定 #${stableCount} (len=${status.contentLength}, isGenerating=${status.isGenerating})`);
-          // 内容稳定2秒且不在生成，则认为完成
-          if (stableCount >= 2 && !status.isGenerating) {
+          // 内容稳定3秒且不在生成，则认为完成（增加稳定性阈值）
+          if (stableCount >= 3 && !status.isGenerating) {
             console.log(`  ✅ AI响应完成 (${status.contentLength}字)`);
             log.info(`AI响应完成 (${status.contentLength}字) [耗时: ${elapsedSec}s, 循环: ${loopCount}次]`);
             lastContent = status.content;
@@ -645,24 +645,33 @@ export class WebAIService {
     const totalSec = Math.round((Date.now() - startTime) / 1000);
     log.info(`响应等待结束: 总耗时=${totalSec}s, 循环次数=${loopCount}, 内容长度=${lastContent.length}`);
 
+    // Wait a bit more to ensure content is fully rendered
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // Get the last response element (AI's reply)
-    let responseText = '';
-    
-    // Try multiple selectors to get response
-    for (const sel of responseSelectors) {
-      try {
-        const text = await page.$$eval(sel, (els) => {
-          const lastEl = els[els.length - 1];
-          return lastEl ? lastEl.textContent || '' : '';
-        });
-        if (text && text.trim().length > 10) {
-          responseText = text;
-          console.log(`  ✓ 获取响应成功 (${sel})`);
-          break;
-        }
-      } catch { continue; }
+    // Use the same content extraction logic as in the loop for consistency
+    let responseText = lastContent; // Start with the content from the loop
+
+    // If content from loop is too short, try to extract again
+    if (!responseText || responseText.trim().length < 10) {
+      // Try multiple selectors to get response
+      for (const sel of responseSelectors) {
+        try {
+          const text = await page.$$eval(sel, (els) => {
+            const lastEl = els[els.length - 1];
+            return lastEl ? lastEl.textContent || '' : '';
+          });
+          if (text && text.trim().length > 10) {
+            responseText = text;
+            console.log(`  ✓ 获取响应成功 (${sel})`);
+            break;
+          }
+        } catch { continue; }
+      }
+    } else {
+      console.log(`  ✓ 使用循环中获取的内容 (${responseText.length}字)`);
     }
-    
+
     // Fallback: try to get any large text block
     if (!responseText || responseText.trim().length < 10) {
       responseText = await page.evaluate(() => {
@@ -674,7 +683,7 @@ export class WebAIService {
           '[class*="response"]',
           '[class*="assistant"]'
         ];
-        
+
         for (const sel of selectors) {
           const els = document.querySelectorAll(sel);
           if (els.length > 0) {
@@ -683,7 +692,7 @@ export class WebAIService {
             if (text.length > 20) return text;
           }
         }
-        
+
         // Fallback: get the longest text block
         const allDivs = document.querySelectorAll('div, p, section');
         let longestText = '';
@@ -704,6 +713,11 @@ export class WebAIService {
 
     log.info(`[${configName}] response done (${responseText.length} chars)`);
     timer.log(`[${configName}] total`);
+
+    // Save active session for follow-up
+    this.activePage = page;
+    this.activeConfig = config;
+
     return {
       content: responseText.trim(),
       model: config.name,
@@ -1025,9 +1039,46 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     // Check for verification dialogs - pass config name for fallback
     await this.handleVerificationDialog(page, config.name);
 
+    // Find input element with fallback logic (same as chat method)
+    const inputSelectors = (config.inputSelector || 'textarea').split(',').map(s => s.trim());
+    let foundSelector = '';
+    for (const sel of inputSelectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 3000 });
+        foundSelector = sel;
+        break;
+      } catch { continue; }
+    }
+
+    if (!foundSelector) {
+      // Fallback to more generic selectors
+      const fallbackSelectors = ['[contenteditable="true"]', 'textarea', '[class*="input"]'];
+      for (const sel of fallbackSelectors) {
+        try {
+          await page.waitForSelector(sel, { timeout: 5000 });
+          foundSelector = sel;
+          console.log(`  ✓ Fallback 找到输入框: ${sel}`);
+          break;
+        } catch { continue; }
+      }
+    }
+
+    if (!foundSelector) {
+      throw new Error('无法找到输入框');
+    }
+
     // Input follow-up using CDP insertText (paste-like)
-    const inputSelector = config.inputSelector || 'textarea';
-    await page.click(inputSelector);
+    try {
+      await page.click(foundSelector);
+    } catch {
+      // If click fails, try to focus the element
+      console.log('  ⚠️ 直接点击失败，尝试聚焦...');
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) (el as HTMLElement).focus();
+      }, foundSelector);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
     // Clear and insert text at once
     await page.keyboard.down('Control');
@@ -1039,36 +1090,128 @@ private async queryWithImageGeneric(config: WebAIConfig, imagePath: string, quer
     await client.send('Input.insertText', { text: question });
     await client.detach();
 
-    // Get current response count
-    const responseSelector = config.responseSelector || '.response';
-    const initialCount = await page.$$eval(responseSelector, els => els.length);
-
     // Wait then submit
     await new Promise(resolve => setTimeout(resolve, 1000));
     await page.keyboard.press('Enter');
 
-    // Wait for new response
-    await page.waitForFunction(
-      (selector: string, count: number) => {
-        const elements = document.querySelectorAll(selector);
-        return elements.length > count;
-      },
-      { timeout: config.responseTimeout || 120000 },
-      responseSelector,
-      initialCount
-    );
-
-    // Wait for response to complete
-    await this.waitForResponseComplete(page, responseSelector);
-
-    // Get response
-    const responseText = await page.$$eval(responseSelector, (els) => {
-      const lastEl = els[els.length - 1];
-      return lastEl ? lastEl.textContent || '' : '';
+    // Get current count of markdown elements before waiting for new response
+    const initialMarkdownCount = await page.evaluate(() => {
+      return document.querySelectorAll('[class*="markdown"]').length;
     });
 
+    // Wait for response using the same logic as chat method
+    console.log('  ⏳ 等待AI响应...');
+    const startTime = Date.now();
+    const maxWaitMs = config.responseTimeout || 60000;
+    let lastContent = '';
+    let lastLength = 0;
+    let stableCount = 0;
+    let responseStarted = false;
+    let loopCount = 0;
+    let hasSeenGenerating = false;
+    let newResponseFound = false;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      loopCount++;
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+
+      // Check response status (same as chat method)
+      const status = await page.evaluate((initialCount: number) => {
+        const typingSelectors = [
+          '[class*="typing"]', '[class*="loading"]', '[class*="generating"]',
+          '[class*="thinking"]', '[class*="streaming"]', '[class*="wait"]',
+          '[class*="cursor-blink"]', '[class*="typing-cursor"]',
+          '[class*="generating-cursor"]', '.typing', '.loading'
+        ];
+        let isGenerating = false;
+        let matchedTypingSelector = '';
+        for (const sel of typingSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of Array.from(els)) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                (el as HTMLElement).offsetWidth > 0) {
+              isGenerating = true;
+              matchedTypingSelector = sel;
+              break;
+            }
+          }
+          if (isGenerating) break;
+        }
+
+        // Get content from the LAST markdown element (most recent AI response)
+        const markdownEls = document.querySelectorAll('[class*="markdown"]');
+        let content = '';
+        let newResponseDetected = false;
+
+        if (markdownEls.length > initialCount) {
+          // New response element detected
+          newResponseDetected = true;
+          const lastEl = markdownEls[markdownEls.length - 1];
+          content = lastEl?.textContent?.trim() || '';
+        } else if (markdownEls.length > 0) {
+          // Fallback: get the last element even if count hasn't increased
+          const lastEl = markdownEls[markdownEls.length - 1];
+          content = lastEl?.textContent?.trim() || '';
+        }
+
+        return {
+          isGenerating,
+          matchedTypingSelector,
+          content,
+          contentLength: content.length,
+          markdownCount: markdownEls.length,
+          newResponseDetected
+        };
+      }, initialMarkdownCount);
+
+      // Track if we've seen generating state
+      if (status.isGenerating) {
+        hasSeenGenerating = true;
+      }
+
+      // Track if new response element appeared
+      if (status.newResponseDetected && !newResponseFound) {
+        newResponseFound = true;
+        console.log(`  📝 检测到新的AI回复元素 (共${status.markdownCount}个)`);
+      }
+
+      log.debug(`[followUp循环#${loopCount}] ${elapsedSec}s | isGenerating=${status.isGenerating} | ` +
+        `contentLen=${status.contentLength} | markdownCount=${status.markdownCount} | ` +
+        `stableCount=${stableCount} | hasSeenGen=${hasSeenGenerating} | newFound=${newResponseFound}`);
+
+      // Response started when we see generating indicator or new response element
+      if (status.contentLength > 0 && !responseStarted) {
+        responseStarted = true;
+        console.log(`  📝 AI开始响应 (${status.contentLength}字)...`);
+      }
+
+      // Check content stability - only after we've seen generating
+      if (hasSeenGenerating && !status.isGenerating && status.contentLength > 0) {
+        if (status.content === lastContent || status.contentLength === lastLength) {
+          stableCount++;
+          // Content stable for 3 seconds and not generating
+          if (stableCount >= 3) {
+            console.log(`  ✅ AI响应完成 (${status.contentLength}字)`);
+            lastContent = status.content;
+            break;
+          }
+        } else {
+          stableCount = 0;
+        }
+      }
+
+      lastContent = status.content;
+      lastLength = status.contentLength;
+
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // Wait a bit more to ensure content is fully rendered
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     timer.log();
-    return responseText.trim();
+    return lastContent.trim();
   }
 
   /**
