@@ -167,25 +167,32 @@ openman/
 ├── src/
 │   ├── core/          # Core systems (config, memory, session, audit, reasoning)
 │   ├── browser/       # Web browsing engine
-│   ├── ai/           # AI service integrations (OpenAI, Anthropic, Google)
-│   ├── streaming/    # Streaming AI responses
-│   ├── tools/        # Local tools integration
-│   ├── permissions/  # Permission system
-│   ├── gateway/      # WebSocket gateway
-│   ├── web/          # Web UI server
-│   ├── web/public/   # Static web UI files (HTML/CSS/JS)
-│   ├── cli/          # Command-line interface
-│   ├── utils/        # Utility functions (errors, logger)
-│   └── types/        # TypeScript types
-├── docs/             # Documentation (openman.md, COMPARISON.md)
-└── tests/            # Test files
+│   ├── ai/            # AI service integrations (OpenAI, Anthropic, Google)
+│   │   └── channels/  # Web AI channel handlers (yuanbao, doubao)
+│   ├── streaming/     # Streaming AI responses
+│   ├── tools/         # Local tools integration
+│   ├── permissions/   # Permission system
+│   ├── gateway/       # WebSocket gateway
+│   ├── web/           # Web UI server
+│   ├── web/public/    # Static web UI files (HTML/CSS/JS)
+│   ├── cli/           # Command-line interface
+│   ├── utils/         # Utility functions (errors, logger)
+│   └── types/         # TypeScript types
+├── tests/             # Test files (webai.test.ts, core.test.ts)
+├── openman            # CLI script
+└── README.md          # This file
 ```
 
 ## Development
 
 ```bash
-# Run tests
+# Run all tests
 npm test
+
+# Or use the openman script for test filtering
+./openman test -case webai          # Run all webai tests
+./openman test -case webai.014      # Run specific test
+./openman test -list                # List all test cases
 
 # Run tests with coverage
 npm run test:coverage
@@ -199,6 +206,19 @@ npm run format
 # Build
 npm run build
 ```
+
+### Test Cases
+
+OpenMan includes comprehensive test cases for Web AI functionality:
+
+| Case ID | Description |
+|---------|-------------|
+| webai.001-007 | Configuration and service tests |
+| webai.008-010 | Yuanbao channel tests (query, follow-up) |
+| webai.011-014 | Image query tests (yuanbao, doubao) |
+| webai.015-018 | Code analysis tests |
+| webai.019 | Error handling tests |
+| core.001-008 | Core functionality tests |
 
 ## Contributing
 
